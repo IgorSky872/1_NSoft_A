@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { createBrowserRouter, RouterProvider, Navigate, Outlet } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { WorkflowProvider } from './context/WorkflowContext';
 import Login from './pages/Login';
@@ -10,35 +10,65 @@ import Inference from './pages/Inference';
 import Sidebar from './components/Sidebar';
 import './App.css';
 
-const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+// Компонент Layout для защищенных страниц (с Sidebar)
+const Layout: React.FC = () => {
   const { isAuthenticated } = useAuth();
-  return isAuthenticated ? <>{children}</> : <Navigate to="/login" />;
-};
 
-const AppContent: React.FC = () => {
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
   return (
-    <Router>
-      <div className="app">
-        <Sidebar isOpen={true} />
-        <div className="main-content">
-          <Routes>
-            <Route path="/login" element={<Login />} />
-            <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
-            <Route path="/compiler" element={<PrivateRoute><Compiler /></PrivateRoute>} />
-            <Route path="/inference" element={<PrivateRoute><Inference /></PrivateRoute>} />
-            <Route path="/diagnostics" element={<PrivateRoute><Diagnostics /></PrivateRoute>} />
-          </Routes>
-        </div>
+    <div className="app">
+      <Sidebar isOpen={true} />
+      <div className="main-content">
+        <Outlet /> {/* Здесь рендерятся вложенные маршруты */}
       </div>
-    </Router>
+    </div>
   );
 };
+
+// Компонент для публичных страниц (Login без Sidebar)
+const PublicLayout: React.FC = () => {
+  const { isAuthenticated } = useAuth();
+
+  // Если уже авторизован, перенаправляем на дашборд
+  if (isAuthenticated) {
+    return <Navigate to="/" replace />;
+  }
+
+  return <Outlet />;
+};
+
+// Конфигурация маршрутов с future flags
+const router = createBrowserRouter([
+  {
+    element: <PublicLayout />,
+    children: [
+      { path: "/login", element: <Login /> },
+    ],
+  },
+  {
+    element: <Layout />,
+    children: [
+      { path: "/", element: <Dashboard /> },
+      { path: "/diagnostics", element: <Diagnostics /> },
+      { path: "/compiler", element: <Compiler /> },
+      { path: "/inference", element: <Inference /> },
+    ],
+  },
+], {
+  future: {
+    v7_startTransition: true,
+    v7_relativeSplatPath: true,
+  },
+});
 
 function App() {
   return (
     <AuthProvider>
       <WorkflowProvider>
-        <AppContent />
+        <RouterProvider router={router} />
       </WorkflowProvider>
     </AuthProvider>
   );

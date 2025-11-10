@@ -26,8 +26,18 @@ def verify_token(token: str) -> Optional[dict]:
     except JWTError:
         return None
 
+#def verify_password(plain_password: str, hashed_password: str) -> bool:
+#    return pwd_context.verify(plain_password, hashed_password)
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    print(f"DEBUG: Verifying password '{plain_password}' against hash '{hashed_password[:20]}...'")
+    try:
+        result = pwd_context.verify(plain_password, hashed_password)
+        print(f"DEBUG: Result: {result}")
+        return result
+    except Exception as e:
+        print(f"DEBUG: Error in verify_password: {e}")
+        return False
 
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)

@@ -16,6 +16,11 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="NSoft AI Compiler")
 
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,7 +34,7 @@ app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(device_router, prefix="/api", tags=["devices"])
 app.include_router(workflow_router, prefix="/api/workflow", tags=["workflow"])
 app.include_router(diagnostics_router, prefix="/api", tags=["diagnostics"])
-app.include_router(compiler_router, prefix="/api", tags=["compiler"])
+app.include_router(compiler_router, prefix="/api/compiler", tags=["compiler"])
 app.include_router(inference_router, prefix="/api", tags=["inference"])
 
 @app.get("/health")

@@ -1,0 +1,5500 @@
+=== NSoft AI Compiler — Code Dump ===
+
+============================================================
+FILE: backend\app\database.py
+============================================================
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+import os
+
+DATABASE_URL = "sqlite:///./app.db"
+
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+============================================================
+FILE: backend\app\main.py
+============================================================
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.database import engine
+from app.models.base import Base
+
+# Импорт роутеров
+from app.api.auth_router import router as auth_router
+from app.api.compiler_router import router as compiler_router
+from app.api.device_router import router as device_router
+from app.api.inference_router import router as inference_router
+from app.api.workflow_router import router as workflow_router
+from app.api.diagnostics_router import router as diagnostics_router
+
+# Создать таблицы
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="NSoft AI Compiler")
+
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Подключить роутеры
+app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+app.include_router(device_router, prefix="/api", tags=["devices"])
+app.include_router(workflow_router, prefix="/api/workflow", tags=["workflow"])
+app.include_router(diagnostics_router, prefix="/api", tags=["diagnostics"])
+app.include_router(compiler_router, prefix="/api/compiler", tags=["compiler"])
+app.include_router(inference_router, prefix="/api", tags=["inference"])
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy"}
+
+============================================================
+FILE: backend\app\__init__.py
+============================================================
+
+
+============================================================
+FILE: backend\app\api\auth_router.py
+============================================================
+from datetime import timedelta
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
+from app.auth.service import authenticate_user
+from app.auth.utils import create_access_token
+from app.models.auth_models import Token
+from app.auth.dependencies import get_current_user
+
+router = APIRouter()
+
+
+@router.post("/login", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token = create_access_token(data={"sub": user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.get("/me")
+async def read_users_me(current_user=Depends(get_current_user)):
+    return current_user
+
+============================================================
+FILE: backend\app\api\compiler_router.py
+============================================================
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from sqlalchemy.orm import Session
+import onnx
+from onnxruntime.quantization import quantize_dynamic, QuantType
+import uuid
+import os
+from app.models.workflow_models import DeviceWorkflowStatus, WorkflowStep
+from app.database import get_db
+from app.auth.dependencies import get_current_user  # ИЗМЕНЕНО
+
+router = APIRouter()
+
+
+@router.post("/quantize")
+async def quantize_model(
+    file: UploadFile = File(...),
+    quant_type: str = Form("int8"),  # Form с дефолтным значением
+    current_user = Depends(get_current_user)
+):
+    content = await file.read()
+    model = onnx.load_from_string(content)
+
+    # Валидация
+    try:
+        onnx.checker.check_model(model)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid ONNX model: {str(e)}")
+
+    # Сохранение оригинала
+    original_path = f"/tmp/original_{uuid.uuid4().hex}.onnx"
+    with open(original_path, "wb") as f:
+        f.write(content)
+
+    # Квантизация
+    quantized_path = f"/tmp/quantized_{uuid.uuid4().hex}.onnx"
+    quantize_dynamic(
+        original_path,
+        quantized_path,
+        weight_type=QuantType.QInt8 if quant_type == "int8" else QuantType.QUInt8
+    )
+
+    return {
+        "original_path": original_path,
+        "quantized_path": quantized_path,
+        "size_reduction": f"{os.path.getsize(quantized_path) / os.path.getsize(original_path) * 100:.1f}%"
+    }
+
+
+@router.post("/compile")
+async def compile_firmware(device_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    workflow = db.query(DeviceWorkflowStatus).filter(DeviceWorkflowStatus.device_id == device_id).first()
+    if not workflow or workflow.current_step != WorkflowStep.COMPILER:
+        raise HTTPException(403, "Complete diagnostics first")
+
+    # Мок компиляции
+    firmware_path = f"/tmp/firmware_{device_id}_{uuid.uuid4().hex}.bin"
+    with open(firmware_path, "w") as f:
+        f.write("mock_firmware_data")
+
+    workflow.compiled_firmware = firmware_path
+    workflow.current_step = WorkflowStep.INFERENCE
+    db.commit()
+
+    return {"status": "compiled", "firmware_path": firmware_path}
+
+============================================================
+FILE: backend\app\api\device_router.py
+============================================================
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from app.models.device_models import Device
+from app.database import get_db
+from app.auth.dependencies import get_current_user  # ИЗМЕНЕНО
+import uuid
+
+router = APIRouter()
+
+
+@router.get("/devices")
+async def get_devices(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    devices = db.query(Device).all()
+    if not devices:
+        mock_device = Device(
+            id=f"MockDevice-{uuid.uuid4().hex[:8]}",
+            status="idle",
+            version="1.0",
+            cores=[{"id": i, "status": "healthy"} for i in range(4)],
+            memristors=[{"id": i, "status": "active"} for i in range(16)],
+            is_mock=True
+        )
+        db.add(mock_device)
+        db.commit()
+        devices = [mock_device]
+
+    return {"devices": [{"id": d.id, "status": d.status, "version": d.version, "is_mock": d.is_mock} for d in devices]}
+
+
+@router.post("/devices/mock")
+async def create_mock_device(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    mock_device = Device(
+        id=f"TestDevice-{uuid.uuid4().hex[:8]}",
+        status="idle",
+        version="1.0",
+        cores=[{"id": i, "status": "healthy"} for i in range(8)],
+        memristors=[{"id": i, "status": "active"} for i in range(32)],
+        is_mock=True
+    )
+    db.add(mock_device)
+    db.commit()
+    return {"device": {"id": mock_device.id, "status": mock_device.status}}
+
+@router.get("/devices/{device_id}")
+async def get_device(device_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if not device:
+        raise HTTPException(404, "Device not found")
+    return {
+        "id": device.id,
+        "status": device.status,
+        "version": device.version,
+        "is_mock": device.is_mock,
+        "diagnostics": device.diagnostics
+    }
+
+============================================================
+FILE: backend\app\api\diagnostics_router.py
+============================================================
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from sqlalchemy.orm import Session
+import asyncio
+from app.models.device_models import Device
+from app.models.workflow_models import DeviceWorkflowStatus, WorkflowStep
+from app.database import get_db
+from app.auth.dependencies import get_current_user
+from pydantic import BaseModel
+
+router = APIRouter()
+
+
+class DiagnosticsRequest(BaseModel):
+    device_id: str
+
+
+async def run_diagnostics_task(device_id: str, db: Session):
+    await asyncio.sleep(3)  # Имитация работы
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if device:
+        device.diagnostics = {
+            "cores": [{"id": i, "status": "healthy"} for i in range(4)],
+            "memristors": {"available": 16, "total": 16},
+            "overall_status": "passed"
+        }
+        workflow = db.query(DeviceWorkflowStatus).filter(DeviceWorkflowStatus.device_id == device_id).first()
+        if workflow:
+            workflow.current_step = WorkflowStep.COMPILER
+        db.commit()
+
+
+@router.post("/diagnostics")
+async def run_diagnostics(
+        request: DiagnosticsRequest,  # Используем Pydantic модель
+        background_tasks: BackgroundTasks,
+        db: Session = Depends(get_db),
+        user=Depends(get_current_user)
+):
+    device = db.query(Device).filter(Device.id == request.device_id).first()
+    if not device:
+        raise HTTPException(404, "Device not found")
+
+    background_tasks.add_task(run_diagnostics_task, request.device_id, db)
+    return {"status": "started", "message": "Diagnostics running in background"}
+
+============================================================
+FILE: backend\app\api\inference_router.py
+============================================================
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from sqlalchemy.orm import Session
+import asyncio
+from app.models.workflow_models import DeviceWorkflowStatus, WorkflowStep
+from app.database import get_db
+from app.auth.dependencies import get_current_user  # ИЗМЕНЕНО
+
+router = APIRouter()
+
+
+@router.post("/flash")
+async def flash_firmware(device_id: str, firmware: UploadFile = File(...), db: Session = Depends(get_db),
+                         user=Depends(get_current_user)):
+    workflow = db.query(DeviceWorkflowStatus).filter(DeviceWorkflowStatus.device_id == device_id).first()
+    if not workflow or workflow.current_step != WorkflowStep.INFERENCE:
+        raise HTTPException(403, "Compile firmware first")
+
+    # Сохранить прошивку
+    content = await firmware.read()
+    flash_path = f"/tmp/flashed_{device_id}.bin"
+    with open(flash_path, "wb") as f:
+        f.write(content)
+
+    return {"status": "flashed", "path": flash_path}
+
+
+@router.post("/infer")
+async def run_inference(device_id: str, data: UploadFile = File(...), db: Session = Depends(get_db),
+                        user=Depends(get_current_user)):
+    workflow = db.query(DeviceWorkflowStatus).filter(DeviceWorkflowStatus.device_id == device_id).first()
+    if not workflow or workflow.current_step != WorkflowStep.INFERENCE:
+        raise HTTPException(403, "Flash firmware first")
+
+    # Мок инференса
+    await asyncio.sleep(2)
+
+    return {
+        "results": [
+            {
+                "input": data.filename,
+                "prediction": "class_3",
+                "confidence": 0.95,
+                "latency_ms": 45
+            }
+        ]
+    }
+
+============================================================
+FILE: backend\app\api\onnx_router.py
+============================================================
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from app.services.onnx_parser import parse_onnx_model
+from app.models.onnx_models import ParsedOnnxResponse
+from app.utils.jwt_utils import verify_token
+import io
+
+router = APIRouter()
+
+@router.post("/parse-onnx", response_model=ParsedOnnxResponse)
+async def parse_onnx(file: UploadFile = File(...), token: dict = Depends(verify_token)):
+    try:
+        content = await file.read()
+        model_stream = io.BytesIO(content)
+        parsed_data = parse_onnx_model(model_stream)
+        return parsed_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error parsing ONNX: {str(e)}")
+
+============================================================
+FILE: backend\app\api\workflow_router.py
+============================================================
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from app.models.workflow_models import DeviceWorkflowStatus, WorkflowStep
+from app.models.device_models import Device
+from app.database import get_db
+from app.auth.dependencies import get_current_user  # ИЗМЕНЕНО
+
+router = APIRouter()
+
+
+@router.post("/select-device/{device_id}")
+async def select_device(device_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if not device:
+        raise HTTPException(404, "Device not found")
+
+    workflow = db.query(DeviceWorkflowStatus).filter(DeviceWorkflowStatus.device_id == device_id).first()
+    if not workflow:
+        workflow = DeviceWorkflowStatus(device_id=device_id, current_step=WorkflowStep.DIAGNOSTICS)
+        db.add(workflow)
+    else:
+        workflow.current_step = WorkflowStep.DIAGNOSTICS
+
+    db.commit()
+    return {"status": "selected", "device_id": device_id, "next_step": "diagnostics"}
+
+
+@router.get("/status/{device_id}")
+async def get_status(device_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    workflow = db.query(DeviceWorkflowStatus).filter(DeviceWorkflowStatus.device_id == device_id).first()
+    if not workflow:
+        raise HTTPException(404, "Workflow not found")
+    return {"device_id": device_id, "current_step": workflow.current_step}
+
+
+@router.post("/unlock-step/{device_id}/{step}")
+async def unlock_step(device_id: str, step: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    workflow = db.query(DeviceWorkflowStatus).filter(DeviceWorkflowStatus.device_id == device_id).first()
+    if not workflow:
+        raise HTTPException(404, "Workflow not found")
+
+    try:
+        workflow.current_step = WorkflowStep(step)
+        db.commit()
+        return {"status": "unlocked", "step": step}
+    except ValueError:
+        raise HTTPException(400, "Invalid step")
+
+============================================================
+FILE: backend\app\api\__init__.py
+============================================================
+
+
+============================================================
+FILE: backend\app\auth\dependencies.py
+============================================================
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from app.auth.service import get_user_from_db
+from app.auth.utils import verify_token
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    """
+    Зависимость для получения текущего пользователя из JWT токена
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    payload = verify_token(token)
+    if payload is None:
+        raise credentials_exception
+
+    username: str = payload.get("sub")
+    if username is None:
+        raise credentials_exception
+
+    user = get_user_from_db(username)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user
+
+============================================================
+FILE: backend\app\auth\service.py
+============================================================
+from typing import Optional
+from app.models.auth_models import UserInDB
+from app.auth.utils import verify_password
+
+# Правильный хеш для пароля "secret"
+# Получен через: pwd_context.hash("secret")
+FAKE_USERS_DB = {
+    "admin": {
+        "username": "admin",
+        "hashed_password": "$2b$12$kh/7Ta7nQy1pJqkpaZHjBOZpthdAikAWnLKtMLW5l3TzFnTLzPV2e",
+        "role": "admin",
+    }
+}
+
+
+def get_user_from_db(username: str) -> Optional[UserInDB]:
+    print(f"DEBUG: Looking for user '{username}'")
+    print(f"DEBUG: Available users: {list(FAKE_USERS_DB.keys())}")
+
+    if username in FAKE_USERS_DB:
+        user_dict = FAKE_USERS_DB[username]
+        print(f"DEBUG: Found user: {user_dict}")
+        return UserInDB(**user_dict)
+
+    print("DEBUG: User not found")
+    return None
+
+
+def authenticate_user(username: str, password: str) -> Optional[UserInDB]:
+    print(f"DEBUG: Auth attempt for '{username}' with password '{password}'")
+
+    user = get_user_from_db(username)
+    if not user:
+        print("DEBUG: No user found")
+        return None
+
+    print(f"DEBUG: User found: {user.username}")
+    print(f"DEBUG: Stored hash: {user.hashed_password}")
+
+    is_valid = verify_password(password, user.hashed_password)
+    print(f"DEBUG: Password valid: {is_valid}")
+
+    if not is_valid:
+        return None
+
+    return user
+
+============================================================
+FILE: backend\app\auth\utils.py
+============================================================
+from datetime import datetime, timedelta
+from typing import Optional
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+
+SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def verify_token(token: str) -> Optional[dict]:
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+
+#def verify_password(plain_password: str, hashed_password: str) -> bool:
+#    return pwd_context.verify(plain_password, hashed_password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    print(f"DEBUG: Verifying password '{plain_password}' against hash '{hashed_password[:20]}...'")
+    try:
+        result = pwd_context.verify(plain_password, hashed_password)
+        print(f"DEBUG: Result: {result}")
+        return result
+    except Exception as e:
+        print(f"DEBUG: Error in verify_password: {e}")
+        return False
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+============================================================
+FILE: backend\app\auth\__init__.py
+============================================================
+# Это позволяет делать from app.auth import dependencies, service, utils
+from . import dependencies, service, utils
+
+============================================================
+FILE: backend\app\models\auth_models.py
+============================================================
+from pydantic import BaseModel
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: str | None = None
+
+class UserBase(BaseModel):
+    username: str
+
+class UserInDB(UserBase):
+    hashed_password: str
+    role: str = "user"
+
+============================================================
+FILE: backend\app\models\base.py
+============================================================
+from sqlalchemy.orm import declarative_base
+
+Base = declarative_base()
+
+============================================================
+FILE: backend\app\models\device_models.py
+============================================================
+from sqlalchemy import Column, String, Boolean, JSON, DateTime
+from sqlalchemy.sql import func
+from .base import Base
+
+
+class Device(Base):
+    __tablename__ = "devices"
+
+    id = Column(String, primary_key=True)
+    status = Column(String, default="idle")  # idle, busy, error
+    version = Column(String, default="1.0")
+    cores = Column(JSON, nullable=True)
+    memristors = Column(JSON, nullable=True)
+    diagnostics = Column(JSON, nullable=True)
+    is_mock = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+============================================================
+FILE: backend\app\models\onnx_models.py
+============================================================
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
+
+class Node(BaseModel):
+    name: str = Field(..., description="Name of the node (or op_type if unnamed)")
+    op_type: str = Field(..., description="Operation type (e.g., Conv, Relu)")
+    inputs: List[str] = Field(..., description="Input tensor names")
+    outputs: List[str] = Field(..., description="Output tensor names")
+    attributes: Dict[str, Any] = Field(..., description="Node attributes (e.g., kernel_size)")
+
+class Edge(BaseModel):
+    from_: str = Field(..., alias="from", description="Source node name")  # 'from' is reserved, use alias
+    to: str = Field(..., description="Target node name")
+    label: str = Field(..., description="Tensor name connecting them")
+
+class Weight(BaseModel):
+    shape: List[int] = Field(..., description="Tensor shape")
+    dtype: str = Field(..., description="Data type (e.g., float32)")
+    values: List[float] = Field(..., description="Flattened values preview (limited)")
+
+class ModelMetadata(BaseModel):
+    producer_name: Optional[str] = None
+    producer_version: Optional[str] = None
+    domain: Optional[str] = None
+    description: Optional[str] = None
+
+class ParsedOnnxResponse(BaseModel):
+    nodes: List[Node] = Field(..., description="List of graph nodes")
+    edges: List[Edge] = Field(..., description="List of graph edges")
+    weights: Dict[str, Weight] = Field(..., description="Model weights (initializers)")
+    model_metadata: ModelMetadata = Field(..., description="Model metadata")
+
+============================================================
+FILE: backend\app\models\workflow_models.py
+============================================================
+from sqlalchemy import Column, String, Enum as SQLEnum
+from .base import Base
+import enum
+
+
+class WorkflowStep(str, enum.Enum):
+    DASHBOARD = "dashboard"
+    DIAGNOSTICS = "diagnostics"
+    COMPILER = "compiler"
+    INFERENCE = "inference"
+
+
+class DeviceWorkflowStatus(Base):
+    __tablename__ = "workflow_status"
+
+    device_id = Column(String, primary_key=True)
+    current_step = Column(SQLEnum(WorkflowStep), default=WorkflowStep.DASHBOARD)
+    compiled_firmware = Column(String, nullable=True)
+
+============================================================
+FILE: backend\app\models\__init__.py
+============================================================
+from .base import Base
+from .device_models import Device
+from .workflow_models import DeviceWorkflowStatus, WorkflowStep
+
+__all__ = ["Base", "Device", "DeviceWorkflowStatus", "WorkflowStep"]
+
+============================================================
+FILE: backend\app\services\auth_service.py
+============================================================
+# backend/app/services/auth_service.py
+
+from app.utils.jwt_utils import hash_password, verify_password, create_access_token
+
+# Ленивая инициализация (чтобы не хэшировать при старте)
+_users_db = None
+
+def get_users_db():
+    global _users_db
+    if _users_db is None:
+        _users_db = {"test": hash_password("test")}
+    return _users_db
+
+def authenticate_user(username: str, password: str):
+    users_db = get_users_db()
+    hashed = users_db.get(username)
+    if hashed and verify_password(password, hashed):
+        return {"sub": username}
+    return None
+
+============================================================
+FILE: backend\app\services\onnx_parser.py
+============================================================
+import onnx
+import numpy as np
+import io
+from onnx import AttributeProto
+
+def parse_onnx_model(model_stream: io.BytesIO) -> dict:
+    model = onnx.load(model_stream)
+    graph = model.graph
+
+    # Извлекаем узлы (nodes) для графа
+    nodes = []
+    for node in graph.node:
+        attributes = {}
+        for attr in node.attribute:
+            if attr.type == AttributeProto.FLOAT:  # 1
+                attributes[attr.name] = attr.f
+            elif attr.type == AttributeProto.INT:  # 2
+                attributes[attr.name] = attr.i
+            elif attr.type == AttributeProto.STRING:  # 3
+                attributes[attr.name] = attr.s.decode('utf-8')
+            elif attr.type == AttributeProto.FLOATS:  # 6
+                attributes[attr.name] = list(attr.floats)
+            elif attr.type == AttributeProto.INTS:  # 7
+                attributes[attr.name] = list(attr.ints)
+            elif attr.type == AttributeProto.STRINGS:  # 8
+                attributes[attr.name] = [s.decode('utf-8') for s in attr.strings]
+            elif attr.type == AttributeProto.TENSOR:  # 4
+                tensor = onnx.numpy_helper.to_array(attr.t)
+                attributes[attr.name] = {
+                    "type": "tensor",
+                    "shape": list(tensor.shape),
+                    #"values": tensor.flatten().tolist()[:100]  # Preview
+                    "values": tensor.flatten().tolist()
+                }
+            else:
+                attributes[attr.name] = f"unsupported type {attr.type}"  # Строка для других
+
+        node_data = {
+            "name": node.name or node.op_type,
+            "op_type": node.op_type,
+            "inputs": list(node.input),
+            "outputs": list(node.output),
+            "attributes": attributes
+        }
+        nodes.append(node_data)
+
+    # Извлекаем связи (edges)
+    edges = []
+    for node in graph.node:
+        for input_name in node.input:
+            for source_node in graph.node:
+                if input_name in source_node.output:
+                    edges.append({
+                        "from": source_node.name or source_node.op_type,
+                        "to": node.name or node.op_type,
+                        "label": input_name
+                    })
+
+    # Извлекаем веса (initializers)
+    weights = {}
+    for init in graph.initializer:
+        tensor = onnx.numpy_helper.to_array(init)
+        weights[init.name] = {
+            "shape": list(tensor.shape),
+            "dtype": str(tensor.dtype),
+            #"values": tensor.flatten().tolist()[:100]  # Ограничиваем для preview
+            "values": tensor.flatten().tolist()
+        }
+
+    # Возвращаем данные
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "weights": weights,
+        "model_metadata": {
+            "producer_name": model.producer_name,
+            "producer_version": model.producer_version,
+            "domain": model.domain,
+            "description": model.doc_string
+        }
+    }
+
+============================================================
+FILE: backend\app\services\__init__.py
+============================================================
+
+
+============================================================
+FILE: backend\app\utils\jwt_utils.py
+============================================================
+# backend/app/utils/jwt_utils.py
+
+from datetime import datetime, timedelta, UTC
+import jwt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from jwt.exceptions import InvalidTokenError
+from passlib.context import CryptContext
+
+SECRET_KEY = "your_super_secret_key_change_in_prod"  # ОБЯЗАТЕЛЬНО ИЗМЕНИ В ПРОДАКШЕНЕ!
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Для хэширования паролей
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# OAuth2 схема
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
+
+# --- Функции для паролей ---
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+# --- JWT функции ---
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
+    to_encode = data.copy()
+    expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def verify_token(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        return payload
+    except InvalidTokenError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+
+============================================================
+FILE: backend\app\utils\__init__.py
+============================================================
+
+
+============================================================
+FILE: frontend\eslint.config.js
+============================================================
+import js from '@eslint/js'
+import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+import tseslint from 'typescript-eslint'
+import { defineConfig, globalIgnores } from 'eslint/config'
+
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      js.configs.recommended,
+      tseslint.configs.recommended,
+      reactHooks.configs['recommended-latest'],
+      reactRefresh.configs.vite,
+    ],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+    },
+  },
+])
+
+
+============================================================
+FILE: frontend\package-lock.json
+============================================================
+{
+  "name": "frontend",
+  "version": "0.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "frontend",
+      "version": "0.0.0",
+      "dependencies": {
+        "@ant-design/icons": "^5.6.1",
+        "antd": "^5.28.0",
+        "axios": "^1.13.2",
+        "cytoscape": "^3.33.1",
+        "cytoscape-dagre": "^2.5.0",
+        "react": "^18.2.0",
+        "react-cytoscapejs": "^2.0.0",
+        "react-dom": "^18.2.0",
+        "react-router-dom": "^6.20.0"
+      },
+      "devDependencies": {
+        "@types/react": "^18.2.37",
+        "@types/react-dom": "^18.2.15",
+        "@vitejs/plugin-react": "^4.2.0",
+        "typescript": "^5.2.2",
+        "vite": "^5.0.0"
+      }
+    },
+    "node_modules/@ant-design/colors": {
+      "version": "7.2.1",
+      "resolved": "https://registry.npmjs.org/@ant-design/colors/-/colors-7.2.1.tgz",
+      "integrity": "sha512-lCHDcEzieu4GA3n8ELeZ5VQ8pKQAWcGGLRTQ50aQM2iqPpq2evTxER84jfdPvsPAtEcZ7m44NI45edFMo8oOYQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@ant-design/fast-color": "^2.0.6"
+      }
+    },
+    "node_modules/@ant-design/cssinjs": {
+      "version": "1.24.0",
+      "resolved": "https://registry.npmjs.org/@ant-design/cssinjs/-/cssinjs-1.24.0.tgz",
+      "integrity": "sha512-K4cYrJBsgvL+IoozUXYjbT6LHHNt+19a9zkvpBPxLjFHas1UpPM2A5MlhROb0BT8N8WoavM5VsP9MeSeNK/3mg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.11.1",
+        "@emotion/hash": "^0.8.0",
+        "@emotion/unitless": "^0.7.5",
+        "classnames": "^2.3.1",
+        "csstype": "^3.1.3",
+        "rc-util": "^5.35.0",
+        "stylis": "^4.3.4"
+      },
+      "peerDependencies": {
+        "react": ">=16.0.0",
+        "react-dom": ">=16.0.0"
+      }
+    },
+    "node_modules/@ant-design/cssinjs-utils": {
+      "version": "1.1.3",
+      "resolved": "https://registry.npmjs.org/@ant-design/cssinjs-utils/-/cssinjs-utils-1.1.3.tgz",
+      "integrity": "sha512-nOoQMLW1l+xR1Co8NFVYiP8pZp3VjIIzqV6D6ShYF2ljtdwWJn5WSsH+7kvCktXL/yhEtWURKOfH5Xz/gzlwsg==",
+      "license": "MIT",
+      "dependencies": {
+        "@ant-design/cssinjs": "^1.21.0",
+        "@babel/runtime": "^7.23.2",
+        "rc-util": "^5.38.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/@ant-design/fast-color": {
+      "version": "2.0.6",
+      "resolved": "https://registry.npmjs.org/@ant-design/fast-color/-/fast-color-2.0.6.tgz",
+      "integrity": "sha512-y2217gk4NqL35giHl72o6Zzqji9O7vHh9YmhUVkPtAOpoTCH4uWxo/pr4VE8t0+ChEPs0qo4eJRC5Q1eXWo3vA==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.24.7"
+      },
+      "engines": {
+        "node": ">=8.x"
+      }
+    },
+    "node_modules/@ant-design/icons": {
+      "version": "5.6.1",
+      "resolved": "https://registry.npmjs.org/@ant-design/icons/-/icons-5.6.1.tgz",
+      "integrity": "sha512-0/xS39c91WjPAZOWsvi1//zjx6kAp4kxWwctR6kuU6p133w8RU0D2dSCvZC19uQyharg/sAvYxGYWl01BbZZfg==",
+      "license": "MIT",
+      "dependencies": {
+        "@ant-design/colors": "^7.0.0",
+        "@ant-design/icons-svg": "^4.4.0",
+        "@babel/runtime": "^7.24.8",
+        "classnames": "^2.2.6",
+        "rc-util": "^5.31.1"
+      },
+      "engines": {
+        "node": ">=8"
+      },
+      "peerDependencies": {
+        "react": ">=16.0.0",
+        "react-dom": ">=16.0.0"
+      }
+    },
+    "node_modules/@ant-design/icons-svg": {
+      "version": "4.4.2",
+      "resolved": "https://registry.npmjs.org/@ant-design/icons-svg/-/icons-svg-4.4.2.tgz",
+      "integrity": "sha512-vHbT+zJEVzllwP+CM+ul7reTEfBR0vgxFe7+lREAsAA7YGsYpboiq2sQNeQeRvh09GfQgs/GyFEvZpJ9cLXpXA==",
+      "license": "MIT"
+    },
+    "node_modules/@ant-design/react-slick": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/@ant-design/react-slick/-/react-slick-1.1.2.tgz",
+      "integrity": "sha512-EzlvzE6xQUBrZuuhSAFTdsr4P2bBBHGZwKFemEfq8gIGyIQCxalYfZW/T2ORbtQx5rU69o+WycP3exY/7T1hGA==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.4",
+        "classnames": "^2.2.5",
+        "json2mq": "^0.2.0",
+        "resize-observer-polyfill": "^1.5.1",
+        "throttle-debounce": "^5.0.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0"
+      }
+    },
+    "node_modules/@babel/code-frame": {
+      "version": "7.27.1",
+      "resolved": "https://registry.npmjs.org/@babel/code-frame/-/code-frame-7.27.1.tgz",
+      "integrity": "sha512-cjQ7ZlQ0Mv3b47hABuTevyTuYN4i+loJKGeV9flcCgIK37cCXRh+L1bd3iBHlynerhQ7BhCkn2BPbQUL+rGqFg==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/helper-validator-identifier": "^7.27.1",
+        "js-tokens": "^4.0.0",
+        "picocolors": "^1.1.1"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/compat-data": {
+      "version": "7.28.5",
+      "resolved": "https://registry.npmjs.org/@babel/compat-data/-/compat-data-7.28.5.tgz",
+      "integrity": "sha512-6uFXyCayocRbqhZOB+6XcuZbkMNimwfVGFji8CTZnCzOHVGvDqzvitu1re2AU5LROliz7eQPhB8CpAMvnx9EjA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/core": {
+      "version": "7.28.5",
+      "resolved": "https://registry.npmjs.org/@babel/core/-/core-7.28.5.tgz",
+      "integrity": "sha512-e7jT4DxYvIDLk1ZHmU/m/mB19rex9sv0c2ftBtjSBv+kVM/902eh0fINUzD7UwLLNR+jU585GxUJ8/EBfAM5fw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/code-frame": "^7.27.1",
+        "@babel/generator": "^7.28.5",
+        "@babel/helper-compilation-targets": "^7.27.2",
+        "@babel/helper-module-transforms": "^7.28.3",
+        "@babel/helpers": "^7.28.4",
+        "@babel/parser": "^7.28.5",
+        "@babel/template": "^7.27.2",
+        "@babel/traverse": "^7.28.5",
+        "@babel/types": "^7.28.5",
+        "@jridgewell/remapping": "^2.3.5",
+        "convert-source-map": "^2.0.0",
+        "debug": "^4.1.0",
+        "gensync": "^1.0.0-beta.2",
+        "json5": "^2.2.3",
+        "semver": "^6.3.1"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/babel"
+      }
+    },
+    "node_modules/@babel/generator": {
+      "version": "7.28.5",
+      "resolved": "https://registry.npmjs.org/@babel/generator/-/generator-7.28.5.tgz",
+      "integrity": "sha512-3EwLFhZ38J4VyIP6WNtt2kUdW9dokXA9Cr4IVIFHuCpZ3H8/YFOl5JjZHisrn1fATPBmKKqXzDFvh9fUwHz6CQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/parser": "^7.28.5",
+        "@babel/types": "^7.28.5",
+        "@jridgewell/gen-mapping": "^0.3.12",
+        "@jridgewell/trace-mapping": "^0.3.28",
+        "jsesc": "^3.0.2"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/helper-compilation-targets": {
+      "version": "7.27.2",
+      "resolved": "https://registry.npmjs.org/@babel/helper-compilation-targets/-/helper-compilation-targets-7.27.2.tgz",
+      "integrity": "sha512-2+1thGUUWWjLTYTHZWK1n8Yga0ijBz1XAhUXcKy81rd5g6yh7hGqMp45v7cadSbEHc9G3OTv45SyneRN3ps4DQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/compat-data": "^7.27.2",
+        "@babel/helper-validator-option": "^7.27.1",
+        "browserslist": "^4.24.0",
+        "lru-cache": "^5.1.1",
+        "semver": "^6.3.1"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/helper-globals": {
+      "version": "7.28.0",
+      "resolved": "https://registry.npmjs.org/@babel/helper-globals/-/helper-globals-7.28.0.tgz",
+      "integrity": "sha512-+W6cISkXFa1jXsDEdYA8HeevQT/FULhxzR99pxphltZcVaugps53THCeiWA8SguxxpSp3gKPiuYfSWopkLQ4hw==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/helper-module-imports": {
+      "version": "7.27.1",
+      "resolved": "https://registry.npmjs.org/@babel/helper-module-imports/-/helper-module-imports-7.27.1.tgz",
+      "integrity": "sha512-0gSFWUPNXNopqtIPQvlD5WgXYI5GY2kP2cCvoT8kczjbfcfuIljTbcWrulD1CIPIX2gt1wghbDy08yE1p+/r3w==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/traverse": "^7.27.1",
+        "@babel/types": "^7.27.1"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/helper-module-transforms": {
+      "version": "7.28.3",
+      "resolved": "https://registry.npmjs.org/@babel/helper-module-transforms/-/helper-module-transforms-7.28.3.tgz",
+      "integrity": "sha512-gytXUbs8k2sXS9PnQptz5o0QnpLL51SwASIORY6XaBKF88nsOT0Zw9szLqlSGQDP/4TljBAD5y98p2U1fqkdsw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/helper-module-imports": "^7.27.1",
+        "@babel/helper-validator-identifier": "^7.27.1",
+        "@babel/traverse": "^7.28.3"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      },
+      "peerDependencies": {
+        "@babel/core": "^7.0.0"
+      }
+    },
+    "node_modules/@babel/helper-plugin-utils": {
+      "version": "7.27.1",
+      "resolved": "https://registry.npmjs.org/@babel/helper-plugin-utils/-/helper-plugin-utils-7.27.1.tgz",
+      "integrity": "sha512-1gn1Up5YXka3YYAHGKpbideQ5Yjf1tDa9qYcgysz+cNCXukyLl6DjPXhD3VRwSb8c0J9tA4b2+rHEZtc6R0tlw==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/helper-string-parser": {
+      "version": "7.27.1",
+      "resolved": "https://registry.npmjs.org/@babel/helper-string-parser/-/helper-string-parser-7.27.1.tgz",
+      "integrity": "sha512-qMlSxKbpRlAridDExk92nSobyDdpPijUq2DW6oDnUqd0iOGxmQjyqhMIihI9+zv4LPyZdRje2cavWPbCbWm3eA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/helper-validator-identifier": {
+      "version": "7.28.5",
+      "resolved": "https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-7.28.5.tgz",
+      "integrity": "sha512-qSs4ifwzKJSV39ucNjsvc6WVHs6b7S03sOh2OcHF9UHfVPqWWALUsNUVzhSBiItjRZoLHx7nIarVjqKVusUZ1Q==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/helper-validator-option": {
+      "version": "7.27.1",
+      "resolved": "https://registry.npmjs.org/@babel/helper-validator-option/-/helper-validator-option-7.27.1.tgz",
+      "integrity": "sha512-YvjJow9FxbhFFKDSuFnVCe2WxXk1zWc22fFePVNEaWJEu8IrZVlda6N0uHwzZrUM1il7NC9Mlp4MaJYbYd9JSg==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/helpers": {
+      "version": "7.28.4",
+      "resolved": "https://registry.npmjs.org/@babel/helpers/-/helpers-7.28.4.tgz",
+      "integrity": "sha512-HFN59MmQXGHVyYadKLVumYsA9dBFun/ldYxipEjzA4196jpLZd8UjEEBLkbEkvfYreDqJhZxYAWFPtrfhNpj4w==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/template": "^7.27.2",
+        "@babel/types": "^7.28.4"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/parser": {
+      "version": "7.28.5",
+      "resolved": "https://registry.npmjs.org/@babel/parser/-/parser-7.28.5.tgz",
+      "integrity": "sha512-KKBU1VGYR7ORr3At5HAtUQ+TV3SzRCXmA/8OdDZiLDBIZxVyzXuztPjfLd3BV1PRAQGCMWWSHYhL0F8d5uHBDQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/types": "^7.28.5"
+      },
+      "bin": {
+        "parser": "bin/babel-parser.js"
+      },
+      "engines": {
+        "node": ">=6.0.0"
+      }
+    },
+    "node_modules/@babel/plugin-transform-react-jsx-self": {
+      "version": "7.27.1",
+      "resolved": "https://registry.npmjs.org/@babel/plugin-transform-react-jsx-self/-/plugin-transform-react-jsx-self-7.27.1.tgz",
+      "integrity": "sha512-6UzkCs+ejGdZ5mFFC/OCUrv028ab2fp1znZmCZjAOBKiBK2jXD1O+BPSfX8X2qjJ75fZBMSnQn3Rq2mrBJK2mw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/helper-plugin-utils": "^7.27.1"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      },
+      "peerDependencies": {
+        "@babel/core": "^7.0.0-0"
+      }
+    },
+    "node_modules/@babel/plugin-transform-react-jsx-source": {
+      "version": "7.27.1",
+      "resolved": "https://registry.npmjs.org/@babel/plugin-transform-react-jsx-source/-/plugin-transform-react-jsx-source-7.27.1.tgz",
+      "integrity": "sha512-zbwoTsBruTeKB9hSq73ha66iFeJHuaFkUbwvqElnygoNbj/jHRsSeokowZFN3CZ64IvEqcmmkVe89OPXc7ldAw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/helper-plugin-utils": "^7.27.1"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      },
+      "peerDependencies": {
+        "@babel/core": "^7.0.0-0"
+      }
+    },
+    "node_modules/@babel/runtime": {
+      "version": "7.28.4",
+      "resolved": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.28.4.tgz",
+      "integrity": "sha512-Q/N6JNWvIvPnLDvjlE1OUBLPQHH6l3CltCEsHIujp45zQUSSh8K+gHnaEX45yAT1nyngnINhvWtzN+Nb9D8RAQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/template": {
+      "version": "7.27.2",
+      "resolved": "https://registry.npmjs.org/@babel/template/-/template-7.27.2.tgz",
+      "integrity": "sha512-LPDZ85aEJyYSd18/DkjNh4/y1ntkE5KwUHWTiqgRxruuZL2F1yuHligVHLvcHY2vMHXttKFpJn6LwfI7cw7ODw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/code-frame": "^7.27.1",
+        "@babel/parser": "^7.27.2",
+        "@babel/types": "^7.27.1"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/traverse": {
+      "version": "7.28.5",
+      "resolved": "https://registry.npmjs.org/@babel/traverse/-/traverse-7.28.5.tgz",
+      "integrity": "sha512-TCCj4t55U90khlYkVV/0TfkJkAkUg3jZFA3Neb7unZT8CPok7iiRfaX0F+WnqWqt7OxhOn0uBKXCw4lbL8W0aQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/code-frame": "^7.27.1",
+        "@babel/generator": "^7.28.5",
+        "@babel/helper-globals": "^7.28.0",
+        "@babel/parser": "^7.28.5",
+        "@babel/template": "^7.27.2",
+        "@babel/types": "^7.28.5",
+        "debug": "^4.3.1"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/types": {
+      "version": "7.28.5",
+      "resolved": "https://registry.npmjs.org/@babel/types/-/types-7.28.5.tgz",
+      "integrity": "sha512-qQ5m48eI/MFLQ5PxQj4PFaprjyCTLI37ElWMmNs0K8Lk3dVeOdNpB3ks8jc7yM5CDmVC73eMVk/trk3fgmrUpA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/helper-string-parser": "^7.27.1",
+        "@babel/helper-validator-identifier": "^7.28.5"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@emotion/hash": {
+      "version": "0.8.0",
+      "resolved": "https://registry.npmjs.org/@emotion/hash/-/hash-0.8.0.tgz",
+      "integrity": "sha512-kBJtf7PH6aWwZ6fka3zQ0p6SBYzx4fl1LoZXE2RrnYST9Xljm7WfKJrU4g/Xr3Beg72MLrp1AWNUmuYJTL7Cow==",
+      "license": "MIT"
+    },
+    "node_modules/@emotion/unitless": {
+      "version": "0.7.5",
+      "resolved": "https://registry.npmjs.org/@emotion/unitless/-/unitless-0.7.5.tgz",
+      "integrity": "sha512-OWORNpfjMsSSUBVrRBVGECkhWcULOAJz9ZW8uK9qgxD+87M7jHRcvh/A96XXNhXTLmKcoYSQtBEX7lHMO7YRwg==",
+      "license": "MIT"
+    },
+    "node_modules/@esbuild/aix-ppc64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.21.5.tgz",
+      "integrity": "sha512-1SDgH6ZSPTlggy1yI6+Dbkiz8xzpHJEVAlF/AM1tHPLsf5STom9rwtjE4hKAF20FfXXNTFqEYXyJNWh1GiZedQ==",
+      "cpu": [
+        "ppc64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "aix"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/android-arm": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.21.5.tgz",
+      "integrity": "sha512-vCPvzSjpPHEi1siZdlvAlsPxXl7WbOVUBBAowWug4rJHb68Ox8KualB+1ocNvT5fjv6wpkX6o/iEpbDrf68zcg==",
+      "cpu": [
+        "arm"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "android"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/android-arm64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.21.5.tgz",
+      "integrity": "sha512-c0uX9VAUBQ7dTDCjq+wdyGLowMdtR/GoC2U5IYk/7D1H1JYC0qseD7+11iMP2mRLN9RcCMRcjC4YMclCzGwS/A==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "android"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/android-x64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.21.5.tgz",
+      "integrity": "sha512-D7aPRUUNHRBwHxzxRvp856rjUHRFW1SdQATKXH2hqA0kAZb1hKmi02OpYRacl0TxIGz/ZmXWlbZgjwWYaCakTA==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "android"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/darwin-arm64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.21.5.tgz",
+      "integrity": "sha512-DwqXqZyuk5AiWWf3UfLiRDJ5EDd49zg6O9wclZ7kUMv2WRFr4HKjXp/5t8JZ11QbQfUS6/cRCKGwYhtNAY88kQ==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/darwin-x64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.21.5.tgz",
+      "integrity": "sha512-se/JjF8NlmKVG4kNIuyWMV/22ZaerB+qaSi5MdrXtd6R08kvs2qCN4C09miupktDitvh8jRFflwGFBQcxZRjbw==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/freebsd-arm64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-arm64/-/freebsd-arm64-0.21.5.tgz",
+      "integrity": "sha512-5JcRxxRDUJLX8JXp/wcBCy3pENnCgBR9bN6JsY4OmhfUtIHe3ZW0mawA7+RDAcMLrMIZaf03NlQiX9DGyB8h4g==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "freebsd"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/freebsd-x64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-x64/-/freebsd-x64-0.21.5.tgz",
+      "integrity": "sha512-J95kNBj1zkbMXtHVH29bBriQygMXqoVQOQYA+ISs0/2l3T9/kj42ow2mpqerRBxDJnmkUDCaQT/dfNXWX/ZZCQ==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "freebsd"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/linux-arm": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm/-/linux-arm-0.21.5.tgz",
+      "integrity": "sha512-bPb5AHZtbeNGjCKVZ9UGqGwo8EUu4cLq68E95A53KlxAPRmUyYv2D6F0uUI65XisGOL1hBP5mTronbgo+0bFcA==",
+      "cpu": [
+        "arm"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/linux-arm64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.21.5.tgz",
+      "integrity": "sha512-ibKvmyYzKsBeX8d8I7MH/TMfWDXBF3db4qM6sy+7re0YXya+K1cem3on9XgdT2EQGMu4hQyZhan7TeQ8XkGp4Q==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/linux-ia32": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-ia32/-/linux-ia32-0.21.5.tgz",
+      "integrity": "sha512-YvjXDqLRqPDl2dvRODYmmhz4rPeVKYvppfGYKSNGdyZkA01046pLWyRKKI3ax8fbJoK5QbxblURkwK/MWY18Tg==",
+      "cpu": [
+        "ia32"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/linux-loong64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-loong64/-/linux-loong64-0.21.5.tgz",
+      "integrity": "sha512-uHf1BmMG8qEvzdrzAqg2SIG/02+4/DHB6a9Kbya0XDvwDEKCoC8ZRWI5JJvNdUjtciBGFQ5PuBlpEOXQj+JQSg==",
+      "cpu": [
+        "loong64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/linux-mips64el": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-mips64el/-/linux-mips64el-0.21.5.tgz",
+      "integrity": "sha512-IajOmO+KJK23bj52dFSNCMsz1QP1DqM6cwLUv3W1QwyxkyIWecfafnI555fvSGqEKwjMXVLokcV5ygHW5b3Jbg==",
+      "cpu": [
+        "mips64el"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/linux-ppc64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-ppc64/-/linux-ppc64-0.21.5.tgz",
+      "integrity": "sha512-1hHV/Z4OEfMwpLO8rp7CvlhBDnjsC3CttJXIhBi+5Aj5r+MBvy4egg7wCbe//hSsT+RvDAG7s81tAvpL2XAE4w==",
+      "cpu": [
+        "ppc64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/linux-riscv64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-riscv64/-/linux-riscv64-0.21.5.tgz",
+      "integrity": "sha512-2HdXDMd9GMgTGrPWnJzP2ALSokE/0O5HhTUvWIbD3YdjME8JwvSCnNGBnTThKGEB91OZhzrJ4qIIxk/SBmyDDA==",
+      "cpu": [
+        "riscv64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/linux-s390x": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-s390x/-/linux-s390x-0.21.5.tgz",
+      "integrity": "sha512-zus5sxzqBJD3eXxwvjN1yQkRepANgxE9lgOW2qLnmr8ikMTphkjgXu1HR01K4FJg8h1kEEDAqDcZQtbrRnB41A==",
+      "cpu": [
+        "s390x"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/linux-x64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.21.5.tgz",
+      "integrity": "sha512-1rYdTpyv03iycF1+BhzrzQJCdOuAOtaqHTWJZCWvijKD2N5Xu0TtVC8/+1faWqcP9iBCWOmjmhoH94dH82BxPQ==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/netbsd-x64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-x64/-/netbsd-x64-0.21.5.tgz",
+      "integrity": "sha512-Woi2MXzXjMULccIwMnLciyZH4nCIMpWQAs049KEeMvOcNADVxo0UBIQPfSmxB3CWKedngg7sWZdLvLczpe0tLg==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "netbsd"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/openbsd-x64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-x64/-/openbsd-x64-0.21.5.tgz",
+      "integrity": "sha512-HLNNw99xsvx12lFBUwoT8EVCsSvRNDVxNpjZ7bPn947b8gJPzeHWyNVhFsaerc0n3TsbOINvRP2byTZ5LKezow==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "openbsd"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/sunos-x64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/sunos-x64/-/sunos-x64-0.21.5.tgz",
+      "integrity": "sha512-6+gjmFpfy0BHU5Tpptkuh8+uw3mnrvgs+dSPQXQOv3ekbordwnzTVEb4qnIvQcYXq6gzkyTnoZ9dZG+D4garKg==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "sunos"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/win32-arm64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/win32-arm64/-/win32-arm64-0.21.5.tgz",
+      "integrity": "sha512-Z0gOTd75VvXqyq7nsl93zwahcTROgqvuAcYDUr+vOv8uHhNSKROyU961kgtCD1e95IqPKSQKH7tBTslnS3tA8A==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/win32-ia32": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/win32-ia32/-/win32-ia32-0.21.5.tgz",
+      "integrity": "sha512-SWXFF1CL2RVNMaVs+BBClwtfZSvDgtL//G/smwAc5oVK/UPu2Gu9tIaRgFmYFFKrmg3SyAjSrElf0TiJ1v8fYA==",
+      "cpu": [
+        "ia32"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@esbuild/win32-x64": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.21.5.tgz",
+      "integrity": "sha512-tQd/1efJuzPC6rCFwEvLtci/xNFcTZknmXs98FYDfGE4wP9ClFV98nyKrzJKVPMhdDnjzLhdUyMX4PsQAPjwIw==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">=12"
+      }
+    },
+    "node_modules/@jridgewell/gen-mapping": {
+      "version": "0.3.13",
+      "resolved": "https://registry.npmjs.org/@jridgewell/gen-mapping/-/gen-mapping-0.3.13.tgz",
+      "integrity": "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@jridgewell/sourcemap-codec": "^1.5.0",
+        "@jridgewell/trace-mapping": "^0.3.24"
+      }
+    },
+    "node_modules/@jridgewell/remapping": {
+      "version": "2.3.5",
+      "resolved": "https://registry.npmjs.org/@jridgewell/remapping/-/remapping-2.3.5.tgz",
+      "integrity": "sha512-LI9u/+laYG4Ds1TDKSJW2YPrIlcVYOwi2fUC6xB43lueCjgxV4lffOCZCtYFiH6TNOX+tQKXx97T4IKHbhyHEQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@jridgewell/gen-mapping": "^0.3.5",
+        "@jridgewell/trace-mapping": "^0.3.24"
+      }
+    },
+    "node_modules/@jridgewell/resolve-uri": {
+      "version": "3.1.2",
+      "resolved": "https://registry.npmjs.org/@jridgewell/resolve-uri/-/resolve-uri-3.1.2.tgz",
+      "integrity": "sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.0.0"
+      }
+    },
+    "node_modules/@jridgewell/sourcemap-codec": {
+      "version": "1.5.5",
+      "resolved": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.5.5.tgz",
+      "integrity": "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@jridgewell/trace-mapping": {
+      "version": "0.3.31",
+      "resolved": "https://registry.npmjs.org/@jridgewell/trace-mapping/-/trace-mapping-0.3.31.tgz",
+      "integrity": "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@jridgewell/resolve-uri": "^3.1.0",
+        "@jridgewell/sourcemap-codec": "^1.4.14"
+      }
+    },
+    "node_modules/@rc-component/async-validator": {
+      "version": "5.0.4",
+      "resolved": "https://registry.npmjs.org/@rc-component/async-validator/-/async-validator-5.0.4.tgz",
+      "integrity": "sha512-qgGdcVIF604M9EqjNF0hbUTz42bz/RDtxWdWuU5EQe3hi7M8ob54B6B35rOsvX5eSvIHIzT9iH1R3n+hk3CGfg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.24.4"
+      },
+      "engines": {
+        "node": ">=14.x"
+      }
+    },
+    "node_modules/@rc-component/color-picker": {
+      "version": "2.0.1",
+      "resolved": "https://registry.npmjs.org/@rc-component/color-picker/-/color-picker-2.0.1.tgz",
+      "integrity": "sha512-WcZYwAThV/b2GISQ8F+7650r5ZZJ043E57aVBFkQ+kSY4C6wdofXgB0hBx+GPGpIU0Z81eETNoDUJMr7oy/P8Q==",
+      "license": "MIT",
+      "dependencies": {
+        "@ant-design/fast-color": "^2.0.6",
+        "@babel/runtime": "^7.23.6",
+        "classnames": "^2.2.6",
+        "rc-util": "^5.38.1"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/@rc-component/context": {
+      "version": "1.4.0",
+      "resolved": "https://registry.npmjs.org/@rc-component/context/-/context-1.4.0.tgz",
+      "integrity": "sha512-kFcNxg9oLRMoL3qki0OMxK+7g5mypjgaaJp/pkOis/6rVxma9nJBF/8kCIuTYHUQNr0ii7MxqE33wirPZLJQ2w==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "rc-util": "^5.27.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/@rc-component/mini-decimal": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/@rc-component/mini-decimal/-/mini-decimal-1.1.0.tgz",
+      "integrity": "sha512-jS4E7T9Li2GuYwI6PyiVXmxTiM6b07rlD9Ge8uGZSCz3WlzcG5ZK7g5bbuKNeZ9pgUuPK/5guV781ujdVpm4HQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.18.0"
+      },
+      "engines": {
+        "node": ">=8.x"
+      }
+    },
+    "node_modules/@rc-component/mutate-observer": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/@rc-component/mutate-observer/-/mutate-observer-1.1.0.tgz",
+      "integrity": "sha512-QjrOsDXQusNwGZPf4/qRQasg7UFEj06XiCJ8iuiq/Io7CrHrgVi6Uuetw60WAMG1799v+aM8kyc+1L/GBbHSlw==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.18.0",
+        "classnames": "^2.3.2",
+        "rc-util": "^5.24.4"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/@rc-component/portal": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/@rc-component/portal/-/portal-1.1.2.tgz",
+      "integrity": "sha512-6f813C0IsasTZms08kfA8kPAGxbbkYToa8ALaiDIGGECU4i9hj8Plgbx0sNJDrey3EtHO30hmdaxtT0138xZcg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.18.0",
+        "classnames": "^2.3.2",
+        "rc-util": "^5.24.4"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/@rc-component/qrcode": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/@rc-component/qrcode/-/qrcode-1.1.0.tgz",
+      "integrity": "sha512-ABA80Yer0c6I2+moqNY0kF3Y1NxIT6wDP/EINIqbiRbfZKP1HtHpKMh8WuTXLgVGYsoWG2g9/n0PgM8KdnJb4Q==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.24.7",
+        "classnames": "^2.3.2"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/@rc-component/tour": {
+      "version": "1.15.1",
+      "resolved": "https://registry.npmjs.org/@rc-component/tour/-/tour-1.15.1.tgz",
+      "integrity": "sha512-Tr2t7J1DKZUpfJuDZWHxyxWpfmj8EZrqSgyMZ+BCdvKZ6r1UDsfU46M/iWAAFBy961Ssfom2kv5f3UcjIL2CmQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.18.0",
+        "@rc-component/portal": "^1.0.0-9",
+        "@rc-component/trigger": "^2.0.0",
+        "classnames": "^2.3.2",
+        "rc-util": "^5.24.4"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/@rc-component/trigger": {
+      "version": "2.3.0",
+      "resolved": "https://registry.npmjs.org/@rc-component/trigger/-/trigger-2.3.0.tgz",
+      "integrity": "sha512-iwaxZyzOuK0D7lS+0AQEtW52zUWxoGqTGkke3dRyb8pYiShmRpCjB/8TzPI4R6YySCH7Vm9BZj/31VPiiQTLBg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.23.2",
+        "@rc-component/portal": "^1.1.0",
+        "classnames": "^2.3.2",
+        "rc-motion": "^2.0.0",
+        "rc-resize-observer": "^1.3.1",
+        "rc-util": "^5.44.0"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/@remix-run/router": {
+      "version": "1.23.0",
+      "resolved": "https://registry.npmjs.org/@remix-run/router/-/router-1.23.0.tgz",
+      "integrity": "sha512-O3rHJzAQKamUz1fvE0Qaw0xSFqsA/yafi2iqeE0pvdFtCO1viYx8QL6f3Ln/aCCTLxs68SLf0KPM9eSeM8yBnA==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=14.0.0"
+      }
+    },
+    "node_modules/@rolldown/pluginutils": {
+      "version": "1.0.0-beta.27",
+      "resolved": "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.0-beta.27.tgz",
+      "integrity": "sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@rollup/rollup-android-arm-eabi": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-android-arm-eabi/-/rollup-android-arm-eabi-4.52.5.tgz",
+      "integrity": "sha512-8c1vW4ocv3UOMp9K+gToY5zL2XiiVw3k7f1ksf4yO1FlDFQ1C2u72iACFnSOceJFsWskc2WZNqeRhFRPzv+wtQ==",
+      "cpu": [
+        "arm"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "android"
+      ]
+    },
+    "node_modules/@rollup/rollup-android-arm64": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-android-arm64/-/rollup-android-arm64-4.52.5.tgz",
+      "integrity": "sha512-mQGfsIEFcu21mvqkEKKu2dYmtuSZOBMmAl5CFlPGLY94Vlcm+zWApK7F/eocsNzp8tKmbeBP8yXyAbx0XHsFNA==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "android"
+      ]
+    },
+    "node_modules/@rollup/rollup-darwin-arm64": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-darwin-arm64/-/rollup-darwin-arm64-4.52.5.tgz",
+      "integrity": "sha512-takF3CR71mCAGA+v794QUZ0b6ZSrgJkArC+gUiG6LB6TQty9T0Mqh3m2ImRBOxS2IeYBo4lKWIieSvnEk2OQWA==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ]
+    },
+    "node_modules/@rollup/rollup-darwin-x64": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-darwin-x64/-/rollup-darwin-x64-4.52.5.tgz",
+      "integrity": "sha512-W901Pla8Ya95WpxDn//VF9K9u2JbocwV/v75TE0YIHNTbhqUTv9w4VuQ9MaWlNOkkEfFwkdNhXgcLqPSmHy0fA==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ]
+    },
+    "node_modules/@rollup/rollup-freebsd-arm64": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-freebsd-arm64/-/rollup-freebsd-arm64-4.52.5.tgz",
+      "integrity": "sha512-QofO7i7JycsYOWxe0GFqhLmF6l1TqBswJMvICnRUjqCx8b47MTo46W8AoeQwiokAx3zVryVnxtBMcGcnX12LvA==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "freebsd"
+      ]
+    },
+    "node_modules/@rollup/rollup-freebsd-x64": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-freebsd-x64/-/rollup-freebsd-x64-4.52.5.tgz",
+      "integrity": "sha512-jr21b/99ew8ujZubPo9skbrItHEIE50WdV86cdSoRkKtmWa+DDr6fu2c/xyRT0F/WazZpam6kk7IHBerSL7LDQ==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "freebsd"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-arm-gnueabihf": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm-gnueabihf/-/rollup-linux-arm-gnueabihf-4.52.5.tgz",
+      "integrity": "sha512-PsNAbcyv9CcecAUagQefwX8fQn9LQ4nZkpDboBOttmyffnInRy8R8dSg6hxxl2Re5QhHBf6FYIDhIj5v982ATQ==",
+      "cpu": [
+        "arm"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-arm-musleabihf": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm-musleabihf/-/rollup-linux-arm-musleabihf-4.52.5.tgz",
+      "integrity": "sha512-Fw4tysRutyQc/wwkmcyoqFtJhh0u31K+Q6jYjeicsGJJ7bbEq8LwPWV/w0cnzOqR2m694/Af6hpFayLJZkG2VQ==",
+      "cpu": [
+        "arm"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-arm64-gnu": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-gnu/-/rollup-linux-arm64-gnu-4.52.5.tgz",
+      "integrity": "sha512-a+3wVnAYdQClOTlyapKmyI6BLPAFYs0JM8HRpgYZQO02rMR09ZcV9LbQB+NL6sljzG38869YqThrRnfPMCDtZg==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-arm64-musl": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-musl/-/rollup-linux-arm64-musl-4.52.5.tgz",
+      "integrity": "sha512-AvttBOMwO9Pcuuf7m9PkC1PUIKsfaAJ4AYhy944qeTJgQOqJYJ9oVl2nYgY7Rk0mkbsuOpCAYSs6wLYB2Xiw0Q==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-loong64-gnu": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-loong64-gnu/-/rollup-linux-loong64-gnu-4.52.5.tgz",
+      "integrity": "sha512-DkDk8pmXQV2wVrF6oq5tONK6UHLz/XcEVow4JTTerdeV1uqPeHxwcg7aFsfnSm9L+OO8WJsWotKM2JJPMWrQtA==",
+      "cpu": [
+        "loong64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-ppc64-gnu": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-ppc64-gnu/-/rollup-linux-ppc64-gnu-4.52.5.tgz",
+      "integrity": "sha512-W/b9ZN/U9+hPQVvlGwjzi+Wy4xdoH2I8EjaCkMvzpI7wJUs8sWJ03Rq96jRnHkSrcHTpQe8h5Tg3ZzUPGauvAw==",
+      "cpu": [
+        "ppc64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-riscv64-gnu": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-riscv64-gnu/-/rollup-linux-riscv64-gnu-4.52.5.tgz",
+      "integrity": "sha512-sjQLr9BW7R/ZiXnQiWPkErNfLMkkWIoCz7YMn27HldKsADEKa5WYdobaa1hmN6slu9oWQbB6/jFpJ+P2IkVrmw==",
+      "cpu": [
+        "riscv64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-riscv64-musl": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-riscv64-musl/-/rollup-linux-riscv64-musl-4.52.5.tgz",
+      "integrity": "sha512-hq3jU/kGyjXWTvAh2awn8oHroCbrPm8JqM7RUpKjalIRWWXE01CQOf/tUNWNHjmbMHg/hmNCwc/Pz3k1T/j/Lg==",
+      "cpu": [
+        "riscv64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-s390x-gnu": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-s390x-gnu/-/rollup-linux-s390x-gnu-4.52.5.tgz",
+      "integrity": "sha512-gn8kHOrku8D4NGHMK1Y7NA7INQTRdVOntt1OCYypZPRt6skGbddska44K8iocdpxHTMMNui5oH4elPH4QOLrFQ==",
+      "cpu": [
+        "s390x"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-x64-gnu": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-x64-gnu/-/rollup-linux-x64-gnu-4.52.5.tgz",
+      "integrity": "sha512-hXGLYpdhiNElzN770+H2nlx+jRog8TyynpTVzdlc6bndktjKWyZyiCsuDAlpd+j+W+WNqfcyAWz9HxxIGfZm1Q==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-x64-musl": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-x64-musl/-/rollup-linux-x64-musl-4.52.5.tgz",
+      "integrity": "sha512-arCGIcuNKjBoKAXD+y7XomR9gY6Mw7HnFBv5Rw7wQRvwYLR7gBAgV7Mb2QTyjXfTveBNFAtPt46/36vV9STLNg==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-openharmony-arm64": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-openharmony-arm64/-/rollup-openharmony-arm64-4.52.5.tgz",
+      "integrity": "sha512-QoFqB6+/9Rly/RiPjaomPLmR/13cgkIGfA40LHly9zcH1S0bN2HVFYk3a1eAyHQyjs3ZJYlXvIGtcCs5tko9Cw==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "openharmony"
+      ]
+    },
+    "node_modules/@rollup/rollup-win32-arm64-msvc": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-arm64-msvc/-/rollup-win32-arm64-msvc-4.52.5.tgz",
+      "integrity": "sha512-w0cDWVR6MlTstla1cIfOGyl8+qb93FlAVutcor14Gf5Md5ap5ySfQ7R9S/NjNaMLSFdUnKGEasmVnu3lCMqB7w==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ]
+    },
+    "node_modules/@rollup/rollup-win32-ia32-msvc": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-ia32-msvc/-/rollup-win32-ia32-msvc-4.52.5.tgz",
+      "integrity": "sha512-Aufdpzp7DpOTULJCuvzqcItSGDH73pF3ko/f+ckJhxQyHtp67rHw3HMNxoIdDMUITJESNE6a8uh4Lo4SLouOUg==",
+      "cpu": [
+        "ia32"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ]
+    },
+    "node_modules/@rollup/rollup-win32-x64-gnu": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-x64-gnu/-/rollup-win32-x64-gnu-4.52.5.tgz",
+      "integrity": "sha512-UGBUGPFp1vkj6p8wCRraqNhqwX/4kNQPS57BCFc8wYh0g94iVIW33wJtQAx3G7vrjjNtRaxiMUylM0ktp/TRSQ==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ]
+    },
+    "node_modules/@rollup/rollup-win32-x64-msvc": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.52.5.tgz",
+      "integrity": "sha512-TAcgQh2sSkykPRWLrdyy2AiceMckNf5loITqXxFI5VuQjS5tSuw3WlwdN8qv8vzjLAUTvYaH/mVjSFpbkFbpTg==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ]
+    },
+    "node_modules/@types/babel__core": {
+      "version": "7.20.5",
+      "resolved": "https://registry.npmjs.org/@types/babel__core/-/babel__core-7.20.5.tgz",
+      "integrity": "sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/parser": "^7.20.7",
+        "@babel/types": "^7.20.7",
+        "@types/babel__generator": "*",
+        "@types/babel__template": "*",
+        "@types/babel__traverse": "*"
+      }
+    },
+    "node_modules/@types/babel__generator": {
+      "version": "7.27.0",
+      "resolved": "https://registry.npmjs.org/@types/babel__generator/-/babel__generator-7.27.0.tgz",
+      "integrity": "sha512-ufFd2Xi92OAVPYsy+P4n7/U7e68fex0+Ee8gSG9KX7eo084CWiQ4sdxktvdl0bOPupXtVJPY19zk6EwWqUQ8lg==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/types": "^7.0.0"
+      }
+    },
+    "node_modules/@types/babel__template": {
+      "version": "7.4.4",
+      "resolved": "https://registry.npmjs.org/@types/babel__template/-/babel__template-7.4.4.tgz",
+      "integrity": "sha512-h/NUaSyG5EyxBIp8YRxo4RMe2/qQgvyowRwVMzhYhBCONbW8PUsg4lkFMrhgZhUe5z3L3MiLDuvyJ/CaPa2A8A==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/parser": "^7.1.0",
+        "@babel/types": "^7.0.0"
+      }
+    },
+    "node_modules/@types/babel__traverse": {
+      "version": "7.28.0",
+      "resolved": "https://registry.npmjs.org/@types/babel__traverse/-/babel__traverse-7.28.0.tgz",
+      "integrity": "sha512-8PvcXf70gTDZBgt9ptxJ8elBeBjcLOAcOtoO/mPJjtji1+CdGbHgm77om1GrsPxsiE+uXIpNSK64UYaIwQXd4Q==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/types": "^7.28.2"
+      }
+    },
+    "node_modules/@types/estree": {
+      "version": "1.0.8",
+      "resolved": "https://registry.npmjs.org/@types/estree/-/estree-1.0.8.tgz",
+      "integrity": "sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@types/node": {
+      "version": "24.9.2",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-24.9.2.tgz",
+      "integrity": "sha512-uWN8YqxXxqFMX2RqGOrumsKeti4LlmIMIyV0lgut4jx7KQBcBiW6vkDtIBvHnHIquwNfJhk8v2OtmO8zXWHfPA==",
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "peer": true,
+      "dependencies": {
+        "undici-types": "~7.16.0"
+      }
+    },
+    "node_modules/@types/prop-types": {
+      "version": "15.7.15",
+      "resolved": "https://registry.npmjs.org/@types/prop-types/-/prop-types-15.7.15.tgz",
+      "integrity": "sha512-F6bEyamV9jKGAFBEmlQnesRPGOQqS2+Uwi0Em15xenOxHaf2hv6L8YCVn3rPdPJOiJfPiCnLIRyvwVaqMY3MIw==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@types/react": {
+      "version": "18.3.26",
+      "resolved": "https://registry.npmjs.org/@types/react/-/react-18.3.26.tgz",
+      "integrity": "sha512-RFA/bURkcKzx/X9oumPG9Vp3D3JUgus/d0b67KB0t5S/raciymilkOa66olh78MUI92QLbEJevO7rvqU/kjwKA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/prop-types": "*",
+        "csstype": "^3.0.2"
+      }
+    },
+    "node_modules/@types/react-dom": {
+      "version": "18.3.7",
+      "resolved": "https://registry.npmjs.org/@types/react-dom/-/react-dom-18.3.7.tgz",
+      "integrity": "sha512-MEe3UeoENYVFXzoXEWsvcpg6ZvlrFNlOQ7EOsvhI3CfAXwzPfO8Qwuxd40nepsYKqyyVQnTdEfv68q91yLcKrQ==",
+      "dev": true,
+      "license": "MIT",
+      "peerDependencies": {
+        "@types/react": "^18.0.0"
+      }
+    },
+    "node_modules/@vitejs/plugin-react": {
+      "version": "4.7.0",
+      "resolved": "https://registry.npmjs.org/@vitejs/plugin-react/-/plugin-react-4.7.0.tgz",
+      "integrity": "sha512-gUu9hwfWvvEDBBmgtAowQCojwZmJ5mcLn3aufeCsitijs3+f2NsrPtlAWIR6OPiqljl96GVCUbLe0HyqIpVaoA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@babel/core": "^7.28.0",
+        "@babel/plugin-transform-react-jsx-self": "^7.27.1",
+        "@babel/plugin-transform-react-jsx-source": "^7.27.1",
+        "@rolldown/pluginutils": "1.0.0-beta.27",
+        "@types/babel__core": "^7.20.5",
+        "react-refresh": "^0.17.0"
+      },
+      "engines": {
+        "node": "^14.18.0 || >=16.0.0"
+      },
+      "peerDependencies": {
+        "vite": "^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
+      }
+    },
+    "node_modules/antd": {
+      "version": "5.28.0",
+      "resolved": "https://registry.npmjs.org/antd/-/antd-5.28.0.tgz",
+      "integrity": "sha512-AmCvyhWGHzlDQ6sfnGBBrFm/8sLPbBI8d/NDBsecliKqrTZUMr07TAQldo43iowwKzvgKxxuRoUHaBaYcBMdQA==",
+      "license": "MIT",
+      "dependencies": {
+        "@ant-design/colors": "^7.2.1",
+        "@ant-design/cssinjs": "^1.23.0",
+        "@ant-design/cssinjs-utils": "^1.1.3",
+        "@ant-design/fast-color": "^2.0.6",
+        "@ant-design/icons": "^5.6.1",
+        "@ant-design/react-slick": "~1.1.2",
+        "@babel/runtime": "^7.26.0",
+        "@rc-component/color-picker": "~2.0.1",
+        "@rc-component/mutate-observer": "^1.1.0",
+        "@rc-component/qrcode": "~1.1.0",
+        "@rc-component/tour": "~1.15.1",
+        "@rc-component/trigger": "^2.3.0",
+        "classnames": "^2.5.1",
+        "copy-to-clipboard": "^3.3.3",
+        "dayjs": "^1.11.11",
+        "rc-cascader": "~3.34.0",
+        "rc-checkbox": "~3.5.0",
+        "rc-collapse": "~3.9.0",
+        "rc-dialog": "~9.6.0",
+        "rc-drawer": "~7.3.0",
+        "rc-dropdown": "~4.2.1",
+        "rc-field-form": "~2.7.1",
+        "rc-image": "~7.12.0",
+        "rc-input": "~1.8.0",
+        "rc-input-number": "~9.5.0",
+        "rc-mentions": "~2.20.0",
+        "rc-menu": "~9.16.1",
+        "rc-motion": "^2.9.5",
+        "rc-notification": "~5.6.4",
+        "rc-pagination": "~5.1.0",
+        "rc-picker": "~4.11.3",
+        "rc-progress": "~4.0.0",
+        "rc-rate": "~2.13.1",
+        "rc-resize-observer": "^1.4.3",
+        "rc-segmented": "~2.7.0",
+        "rc-select": "~14.16.8",
+        "rc-slider": "~11.1.9",
+        "rc-steps": "~6.0.1",
+        "rc-switch": "~4.1.0",
+        "rc-table": "~7.54.0",
+        "rc-tabs": "~15.7.0",
+        "rc-textarea": "~1.10.2",
+        "rc-tooltip": "~6.4.0",
+        "rc-tree": "~5.13.1",
+        "rc-tree-select": "~5.27.0",
+        "rc-upload": "~4.11.0",
+        "rc-util": "^5.44.4",
+        "scroll-into-view-if-needed": "^3.1.0",
+        "throttle-debounce": "^5.0.2"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/ant-design"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/asynckit": {
+      "version": "0.4.0",
+      "resolved": "https://registry.npmjs.org/asynckit/-/asynckit-0.4.0.tgz",
+      "integrity": "sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q==",
+      "license": "MIT"
+    },
+    "node_modules/axios": {
+      "version": "1.13.2",
+      "resolved": "https://registry.npmjs.org/axios/-/axios-1.13.2.tgz",
+      "integrity": "sha512-VPk9ebNqPcy5lRGuSlKx752IlDatOjT9paPlm8A7yOuW2Fbvp4X3JznJtT4f0GzGLLiWE9W8onz51SqLYwzGaA==",
+      "license": "MIT",
+      "dependencies": {
+        "follow-redirects": "^1.15.6",
+        "form-data": "^4.0.4",
+        "proxy-from-env": "^1.1.0"
+      }
+    },
+    "node_modules/baseline-browser-mapping": {
+      "version": "2.8.21",
+      "resolved": "https://registry.npmjs.org/baseline-browser-mapping/-/baseline-browser-mapping-2.8.21.tgz",
+      "integrity": "sha512-JU0h5APyQNsHOlAM7HnQnPToSDQoEBZqzu/YBlqDnEeymPnZDREeXJA3KBMQee+dKteAxZ2AtvQEvVYdZf241Q==",
+      "dev": true,
+      "license": "Apache-2.0",
+      "bin": {
+        "baseline-browser-mapping": "dist/cli.js"
+      }
+    },
+    "node_modules/browserslist": {
+      "version": "4.27.0",
+      "resolved": "https://registry.npmjs.org/browserslist/-/browserslist-4.27.0.tgz",
+      "integrity": "sha512-AXVQwdhot1eqLihwasPElhX2tAZiBjWdJ9i/Zcj2S6QYIjkx62OKSfnobkriB81C3l4w0rVy3Nt4jaTBltYEpw==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/browserslist"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/browserslist"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "baseline-browser-mapping": "^2.8.19",
+        "caniuse-lite": "^1.0.30001751",
+        "electron-to-chromium": "^1.5.238",
+        "node-releases": "^2.0.26",
+        "update-browserslist-db": "^1.1.4"
+      },
+      "bin": {
+        "browserslist": "cli.js"
+      },
+      "engines": {
+        "node": "^6 || ^7 || ^8 || ^9 || ^10 || ^11 || ^12 || >=13.7"
+      }
+    },
+    "node_modules/call-bind-apply-helpers": {
+      "version": "1.0.2",
+      "resolved": "https://registry.npmjs.org/call-bind-apply-helpers/-/call-bind-apply-helpers-1.0.2.tgz",
+      "integrity": "sha512-Sp1ablJ0ivDkSzjcaJdxEunN5/XvksFJ2sMBFfq6x0ryhQV/2b/KwFe21cMpmHtPOSij8K99/wSfoEuTObmuMQ==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0",
+        "function-bind": "^1.1.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/caniuse-lite": {
+      "version": "1.0.30001751",
+      "resolved": "https://registry.npmjs.org/caniuse-lite/-/caniuse-lite-1.0.30001751.tgz",
+      "integrity": "sha512-A0QJhug0Ly64Ii3eIqHu5X51ebln3k4yTUkY1j8drqpWHVreg/VLijN48cZ1bYPiqOQuqpkIKnzr/Ul8V+p6Cw==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/browserslist"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/caniuse-lite"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "CC-BY-4.0"
+    },
+    "node_modules/classnames": {
+      "version": "2.5.1",
+      "resolved": "https://registry.npmjs.org/classnames/-/classnames-2.5.1.tgz",
+      "integrity": "sha512-saHYOzhIQs6wy2sVxTM6bUDsQO4F50V9RQ22qBpEdCW+I+/Wmke2HOl6lS6dTpdxVhb88/I6+Hs+438c3lfUow==",
+      "license": "MIT"
+    },
+    "node_modules/combined-stream": {
+      "version": "1.0.8",
+      "resolved": "https://registry.npmjs.org/combined-stream/-/combined-stream-1.0.8.tgz",
+      "integrity": "sha512-FQN4MRfuJeHf7cBbBMJFXhKSDq+2kAArBlmRBvcvFE5BB1HZKXtSFASDhdlz9zOYwxh8lDdnvmMOe/+5cdoEdg==",
+      "license": "MIT",
+      "dependencies": {
+        "delayed-stream": "~1.0.0"
+      },
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/compute-scroll-into-view": {
+      "version": "3.1.1",
+      "resolved": "https://registry.npmjs.org/compute-scroll-into-view/-/compute-scroll-into-view-3.1.1.tgz",
+      "integrity": "sha512-VRhuHOLoKYOy4UbilLbUzbYg93XLjv2PncJC50EuTWPA3gaja1UjBsUP/D/9/juV3vQFr6XBEzn9KCAHdUvOHw==",
+      "license": "MIT"
+    },
+    "node_modules/convert-source-map": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/convert-source-map/-/convert-source-map-2.0.0.tgz",
+      "integrity": "sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/copy-to-clipboard": {
+      "version": "3.3.3",
+      "resolved": "https://registry.npmjs.org/copy-to-clipboard/-/copy-to-clipboard-3.3.3.tgz",
+      "integrity": "sha512-2KV8NhB5JqC3ky0r9PMCAZKbUHSwtEo4CwCs0KXgruG43gX5PMqDEBbVU4OUzw2MuAWUfsuFmWvEKG5QRfSnJA==",
+      "license": "MIT",
+      "dependencies": {
+        "toggle-selection": "^1.0.6"
+      }
+    },
+    "node_modules/csstype": {
+      "version": "3.1.3",
+      "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.1.3.tgz",
+      "integrity": "sha512-M1uQkMl8rQK/szD0LNhtqxIPLpimGm8sOBwU7lLnCpSbTyY3yeU1Vc7l4KT5zT4s/yOxHH5O7tIuuLOCnLADRw==",
+      "license": "MIT"
+    },
+    "node_modules/cytoscape": {
+      "version": "3.33.1",
+      "resolved": "https://registry.npmjs.org/cytoscape/-/cytoscape-3.33.1.tgz",
+      "integrity": "sha512-iJc4TwyANnOGR1OmWhsS9ayRS3s+XQ185FmuHObThD+5AeJCakAAbWv8KimMTt08xCCLNgneQwFp+JRJOr9qGQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.10"
+      }
+    },
+    "node_modules/cytoscape-dagre": {
+      "version": "2.5.0",
+      "resolved": "https://registry.npmjs.org/cytoscape-dagre/-/cytoscape-dagre-2.5.0.tgz",
+      "integrity": "sha512-VG2Knemmshop4kh5fpLO27rYcyUaaDkRw+6PiX4bstpB+QFt0p2oauMrsjVbUamGWQ6YNavh7x2em2uZlzV44g==",
+      "license": "MIT",
+      "dependencies": {
+        "dagre": "^0.8.5"
+      },
+      "peerDependencies": {
+        "cytoscape": "^3.2.22"
+      }
+    },
+    "node_modules/dagre": {
+      "version": "0.8.5",
+      "resolved": "https://registry.npmjs.org/dagre/-/dagre-0.8.5.tgz",
+      "integrity": "sha512-/aTqmnRta7x7MCCpExk7HQL2O4owCT2h8NT//9I1OQ9vt29Pa0BzSAkR5lwFUcQ7491yVi/3CXU9jQ5o0Mn2Sw==",
+      "license": "MIT",
+      "dependencies": {
+        "graphlib": "^2.1.8",
+        "lodash": "^4.17.15"
+      }
+    },
+    "node_modules/dayjs": {
+      "version": "1.11.19",
+      "resolved": "https://registry.npmjs.org/dayjs/-/dayjs-1.11.19.tgz",
+      "integrity": "sha512-t5EcLVS6QPBNqM2z8fakk/NKel+Xzshgt8FFKAn+qwlD1pzZWxh0nVCrvFK7ZDb6XucZeF9z8C7CBWTRIVApAw==",
+      "license": "MIT"
+    },
+    "node_modules/debug": {
+      "version": "4.4.3",
+      "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
+      "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "ms": "^2.1.3"
+      },
+      "engines": {
+        "node": ">=6.0"
+      },
+      "peerDependenciesMeta": {
+        "supports-color": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/delayed-stream": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/delayed-stream/-/delayed-stream-1.0.0.tgz",
+      "integrity": "sha512-ZySD7Nf91aLB0RxL4KGrKHBXl7Eds1DAmEdcoVawXnLD7SDhpNgtuII2aAkg7a7QS41jxPSZ17p4VdGnMHk3MQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.4.0"
+      }
+    },
+    "node_modules/dunder-proto": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/dunder-proto/-/dunder-proto-1.0.1.tgz",
+      "integrity": "sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==",
+      "license": "MIT",
+      "dependencies": {
+        "call-bind-apply-helpers": "^1.0.1",
+        "es-errors": "^1.3.0",
+        "gopd": "^1.2.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/electron-to-chromium": {
+      "version": "1.5.243",
+      "resolved": "https://registry.npmjs.org/electron-to-chromium/-/electron-to-chromium-1.5.243.tgz",
+      "integrity": "sha512-ZCphxFW3Q1TVhcgS9blfut1PX8lusVi2SvXQgmEEnK4TCmE1JhH2JkjJN+DNt0pJJwfBri5AROBnz2b/C+YU9g==",
+      "dev": true,
+      "license": "ISC"
+    },
+    "node_modules/es-define-property": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/es-define-property/-/es-define-property-1.0.1.tgz",
+      "integrity": "sha512-e3nRfgfUZ4rNGL232gUgX06QNyyez04KdjFrF+LTRoOXmrOgFKDg4BCdsjW8EnT69eqdYGmRpJwiPVYNrCaW3g==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/es-errors": {
+      "version": "1.3.0",
+      "resolved": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+      "integrity": "sha512-Zf5H2Kxt2xjTvbJvP2ZWLEICxA6j+hAmMzIlypy4xcBg1vKVnx89Wy0GbS+kf5cwCVFFzdCFh2XSCFNULS6csw==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/es-object-atoms": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/es-object-atoms/-/es-object-atoms-1.1.1.tgz",
+      "integrity": "sha512-FGgH2h8zKNim9ljj7dankFPcICIK9Cp5bm+c2gQSYePhpaG5+esrLODihIorn+Pe6FGJzWhXQotPv73jTaldXA==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/es-set-tostringtag": {
+      "version": "2.1.0",
+      "resolved": "https://registry.npmjs.org/es-set-tostringtag/-/es-set-tostringtag-2.1.0.tgz",
+      "integrity": "sha512-j6vWzfrGVfyXxge+O0x5sh6cvxAog0a/4Rdd2K36zCMV5eJ+/+tOAngRO8cODMNWbVRdVlmGZQL2YS3yR8bIUA==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0",
+        "get-intrinsic": "^1.2.6",
+        "has-tostringtag": "^1.0.2",
+        "hasown": "^2.0.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/esbuild": {
+      "version": "0.21.5",
+      "resolved": "https://registry.npmjs.org/esbuild/-/esbuild-0.21.5.tgz",
+      "integrity": "sha512-mg3OPMV4hXywwpoDxu3Qda5xCKQi+vCTZq8S9J/EpkhB2HzKXq4SNFZE3+NK93JYxc8VMSep+lOUSC/RVKaBqw==",
+      "dev": true,
+      "hasInstallScript": true,
+      "license": "MIT",
+      "bin": {
+        "esbuild": "bin/esbuild"
+      },
+      "engines": {
+        "node": ">=12"
+      },
+      "optionalDependencies": {
+        "@esbuild/aix-ppc64": "0.21.5",
+        "@esbuild/android-arm": "0.21.5",
+        "@esbuild/android-arm64": "0.21.5",
+        "@esbuild/android-x64": "0.21.5",
+        "@esbuild/darwin-arm64": "0.21.5",
+        "@esbuild/darwin-x64": "0.21.5",
+        "@esbuild/freebsd-arm64": "0.21.5",
+        "@esbuild/freebsd-x64": "0.21.5",
+        "@esbuild/linux-arm": "0.21.5",
+        "@esbuild/linux-arm64": "0.21.5",
+        "@esbuild/linux-ia32": "0.21.5",
+        "@esbuild/linux-loong64": "0.21.5",
+        "@esbuild/linux-mips64el": "0.21.5",
+        "@esbuild/linux-ppc64": "0.21.5",
+        "@esbuild/linux-riscv64": "0.21.5",
+        "@esbuild/linux-s390x": "0.21.5",
+        "@esbuild/linux-x64": "0.21.5",
+        "@esbuild/netbsd-x64": "0.21.5",
+        "@esbuild/openbsd-x64": "0.21.5",
+        "@esbuild/sunos-x64": "0.21.5",
+        "@esbuild/win32-arm64": "0.21.5",
+        "@esbuild/win32-ia32": "0.21.5",
+        "@esbuild/win32-x64": "0.21.5"
+      }
+    },
+    "node_modules/escalade": {
+      "version": "3.2.0",
+      "resolved": "https://registry.npmjs.org/escalade/-/escalade-3.2.0.tgz",
+      "integrity": "sha512-WUj2qlxaQtO4g6Pq5c29GTcWGDyd8itL8zTlipgECz3JesAiiOKotd8JU6otB3PACgG6xkJUyVhboMS+bje/jA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=6"
+      }
+    },
+    "node_modules/follow-redirects": {
+      "version": "1.15.11",
+      "resolved": "https://registry.npmjs.org/follow-redirects/-/follow-redirects-1.15.11.tgz",
+      "integrity": "sha512-deG2P0JfjrTxl50XGCDyfI97ZGVCxIpfKYmfyrQ54n5FO/0gfIES8C/Psl6kWVDolizcaaxZJnTS0QSMxvnsBQ==",
+      "funding": [
+        {
+          "type": "individual",
+          "url": "https://github.com/sponsors/RubenVerborgh"
+        }
+      ],
+      "license": "MIT",
+      "engines": {
+        "node": ">=4.0"
+      },
+      "peerDependenciesMeta": {
+        "debug": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/form-data": {
+      "version": "4.0.4",
+      "resolved": "https://registry.npmjs.org/form-data/-/form-data-4.0.4.tgz",
+      "integrity": "sha512-KrGhL9Q4zjj0kiUt5OO4Mr/A/jlI2jDYs5eHBpYHPcBEVSiipAvn2Ko2HnPe20rmcuuvMHNdZFp+4IlGTMF0Ow==",
+      "license": "MIT",
+      "dependencies": {
+        "asynckit": "^0.4.0",
+        "combined-stream": "^1.0.8",
+        "es-set-tostringtag": "^2.1.0",
+        "hasown": "^2.0.2",
+        "mime-types": "^2.1.12"
+      },
+      "engines": {
+        "node": ">= 6"
+      }
+    },
+    "node_modules/fsevents": {
+      "version": "2.3.3",
+      "resolved": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
+      "integrity": "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==",
+      "dev": true,
+      "hasInstallScript": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": "^8.16.0 || ^10.6.0 || >=11.0.0"
+      }
+    },
+    "node_modules/function-bind": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/function-bind/-/function-bind-1.1.2.tgz",
+      "integrity": "sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==",
+      "license": "MIT",
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/gensync": {
+      "version": "1.0.0-beta.2",
+      "resolved": "https://registry.npmjs.org/gensync/-/gensync-1.0.0-beta.2.tgz",
+      "integrity": "sha512-3hN7NaskYvMDLQY55gnW3NQ+mesEAepTqlg+VEbj7zzqEMBVNhzcGYYeqFo/TlYz6eQiFcp1HcsCZO+nGgS8zg==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/get-intrinsic": {
+      "version": "1.3.0",
+      "resolved": "https://registry.npmjs.org/get-intrinsic/-/get-intrinsic-1.3.0.tgz",
+      "integrity": "sha512-9fSjSaos/fRIVIp+xSJlE6lfwhES7LNtKaCBIamHsjr2na1BiABJPo0mOjjz8GJDURarmCPGqaiVg5mfjb98CQ==",
+      "license": "MIT",
+      "dependencies": {
+        "call-bind-apply-helpers": "^1.0.2",
+        "es-define-property": "^1.0.1",
+        "es-errors": "^1.3.0",
+        "es-object-atoms": "^1.1.1",
+        "function-bind": "^1.1.2",
+        "get-proto": "^1.0.1",
+        "gopd": "^1.2.0",
+        "has-symbols": "^1.1.0",
+        "hasown": "^2.0.2",
+        "math-intrinsics": "^1.1.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/get-proto": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/get-proto/-/get-proto-1.0.1.tgz",
+      "integrity": "sha512-sTSfBjoXBp89JvIKIefqw7U2CCebsc74kiY6awiGogKtoSGbgjYE/G/+l9sF3MWFPNc9IcoOC4ODfKHfxFmp0g==",
+      "license": "MIT",
+      "dependencies": {
+        "dunder-proto": "^1.0.1",
+        "es-object-atoms": "^1.0.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/gopd": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/gopd/-/gopd-1.2.0.tgz",
+      "integrity": "sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/graphlib": {
+      "version": "2.1.8",
+      "resolved": "https://registry.npmjs.org/graphlib/-/graphlib-2.1.8.tgz",
+      "integrity": "sha512-jcLLfkpoVGmH7/InMC/1hIvOPSUh38oJtGhvrOFGzioE1DZ+0YW16RgmOJhHiuWTvGiJQ9Z1Ik43JvkRPRvE+A==",
+      "license": "MIT",
+      "dependencies": {
+        "lodash": "^4.17.15"
+      }
+    },
+    "node_modules/has-symbols": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/has-symbols/-/has-symbols-1.1.0.tgz",
+      "integrity": "sha512-1cDNdwJ2Jaohmb3sg4OmKaMBwuC48sYni5HUw2DvsC8LjGTLK9h+eb1X6RyuOHe4hT0ULCW68iomhjUoKUqlPQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/has-tostringtag": {
+      "version": "1.0.2",
+      "resolved": "https://registry.npmjs.org/has-tostringtag/-/has-tostringtag-1.0.2.tgz",
+      "integrity": "sha512-NqADB8VjPFLM2V0VvHUewwwsw0ZWBaIdgo+ieHtK3hasLz4qeCRjYcqfB6AQrBggRKppKF8L52/VqdVsO47Dlw==",
+      "license": "MIT",
+      "dependencies": {
+        "has-symbols": "^1.0.3"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/hasown": {
+      "version": "2.0.2",
+      "resolved": "https://registry.npmjs.org/hasown/-/hasown-2.0.2.tgz",
+      "integrity": "sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ==",
+      "license": "MIT",
+      "dependencies": {
+        "function-bind": "^1.1.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/js-tokens": {
+      "version": "4.0.0",
+      "resolved": "https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz",
+      "integrity": "sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==",
+      "license": "MIT"
+    },
+    "node_modules/jsesc": {
+      "version": "3.1.0",
+      "resolved": "https://registry.npmjs.org/jsesc/-/jsesc-3.1.0.tgz",
+      "integrity": "sha512-/sM3dO2FOzXjKQhJuo0Q173wf2KOo8t4I8vHy6lF9poUp7bKT0/NHE8fPX23PwfhnykfqnC2xRxOnVw5XuGIaA==",
+      "dev": true,
+      "license": "MIT",
+      "bin": {
+        "jsesc": "bin/jsesc"
+      },
+      "engines": {
+        "node": ">=6"
+      }
+    },
+    "node_modules/json2mq": {
+      "version": "0.2.0",
+      "resolved": "https://registry.npmjs.org/json2mq/-/json2mq-0.2.0.tgz",
+      "integrity": "sha512-SzoRg7ux5DWTII9J2qkrZrqV1gt+rTaoufMxEzXbS26Uid0NwaJd123HcoB80TgubEppxxIGdNxCx50fEoEWQA==",
+      "license": "MIT",
+      "dependencies": {
+        "string-convert": "^0.2.0"
+      }
+    },
+    "node_modules/json5": {
+      "version": "2.2.3",
+      "resolved": "https://registry.npmjs.org/json5/-/json5-2.2.3.tgz",
+      "integrity": "sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg==",
+      "dev": true,
+      "license": "MIT",
+      "bin": {
+        "json5": "lib/cli.js"
+      },
+      "engines": {
+        "node": ">=6"
+      }
+    },
+    "node_modules/lodash": {
+      "version": "4.17.21",
+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
+      "integrity": "sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==",
+      "license": "MIT"
+    },
+    "node_modules/loose-envify": {
+      "version": "1.4.0",
+      "resolved": "https://registry.npmjs.org/loose-envify/-/loose-envify-1.4.0.tgz",
+      "integrity": "sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q==",
+      "license": "MIT",
+      "dependencies": {
+        "js-tokens": "^3.0.0 || ^4.0.0"
+      },
+      "bin": {
+        "loose-envify": "cli.js"
+      }
+    },
+    "node_modules/lru-cache": {
+      "version": "5.1.1",
+      "resolved": "https://registry.npmjs.org/lru-cache/-/lru-cache-5.1.1.tgz",
+      "integrity": "sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==",
+      "dev": true,
+      "license": "ISC",
+      "dependencies": {
+        "yallist": "^3.0.2"
+      }
+    },
+    "node_modules/math-intrinsics": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/math-intrinsics/-/math-intrinsics-1.1.0.tgz",
+      "integrity": "sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/mime-db": {
+      "version": "1.52.0",
+      "resolved": "https://registry.npmjs.org/mime-db/-/mime-db-1.52.0.tgz",
+      "integrity": "sha512-sPU4uV7dYlvtWJxwwxHD0PuihVNiE7TyAbQ5SWxDCB9mUYvOgroQOwYQQOKPJ8CIbE+1ETVlOoK1UC2nU3gYvg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/mime-types": {
+      "version": "2.1.35",
+      "resolved": "https://registry.npmjs.org/mime-types/-/mime-types-2.1.35.tgz",
+      "integrity": "sha512-ZDY+bPm5zTTF+YpCrAU9nK0UgICYPT0QtT1NZWFv4s++TNkcgVaT0g6+4R2uI4MjQjzysHB1zxuWL50hzaeXiw==",
+      "license": "MIT",
+      "dependencies": {
+        "mime-db": "1.52.0"
+      },
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/ms": {
+      "version": "2.1.3",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/nanoid": {
+      "version": "3.3.11",
+      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.11.tgz",
+      "integrity": "sha512-N8SpfPUnUp1bK+PMYW8qSWdl9U+wwNWI4QKxOYDy9JAro3WMX7p2OeVRF9v+347pnakNevPmiHhNmZ2HbFA76w==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "bin": {
+        "nanoid": "bin/nanoid.cjs"
+      },
+      "engines": {
+        "node": "^10 || ^12 || ^13.7 || ^14 || >=15.0.1"
+      }
+    },
+    "node_modules/node-releases": {
+      "version": "2.0.27",
+      "resolved": "https://registry.npmjs.org/node-releases/-/node-releases-2.0.27.tgz",
+      "integrity": "sha512-nmh3lCkYZ3grZvqcCH+fjmQ7X+H0OeZgP40OierEaAptX4XofMh5kwNbWh7lBduUzCcV/8kZ+NDLCwm2iorIlA==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/object-assign": {
+      "version": "4.1.1",
+      "resolved": "https://registry.npmjs.org/object-assign/-/object-assign-4.1.1.tgz",
+      "integrity": "sha512-rJgTQnkUnH1sFw8yT6VSU3zD3sWmu6sZhIseY8VX+GRu3P6F7Fu+JNDoXfklElbLJSnc3FUQHVe4cU5hj+BcUg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/picocolors": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+      "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==",
+      "dev": true,
+      "license": "ISC"
+    },
+    "node_modules/postcss": {
+      "version": "8.5.6",
+      "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.6.tgz",
+      "integrity": "sha512-3Ybi1tAuwAP9s0r1UQ2J4n5Y0G05bJkpUIO0/bI9MhwmD70S5aTWbXGBwxHrelT+XM1k6dM0pk+SwNkpTRN7Pg==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/postcss/"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/postcss"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "nanoid": "^3.3.11",
+        "picocolors": "^1.1.1",
+        "source-map-js": "^1.2.1"
+      },
+      "engines": {
+        "node": "^10 || ^12 || >=14"
+      }
+    },
+    "node_modules/prop-types": {
+      "version": "15.8.1",
+      "resolved": "https://registry.npmjs.org/prop-types/-/prop-types-15.8.1.tgz",
+      "integrity": "sha512-oj87CgZICdulUohogVAR7AjlC0327U4el4L6eAvOqCeudMDVU0NThNaV+b9Df4dXgSP1gXMTnPdhfe/2qDH5cg==",
+      "license": "MIT",
+      "dependencies": {
+        "loose-envify": "^1.4.0",
+        "object-assign": "^4.1.1",
+        "react-is": "^16.13.1"
+      }
+    },
+    "node_modules/proxy-from-env": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/proxy-from-env/-/proxy-from-env-1.1.0.tgz",
+      "integrity": "sha512-D+zkORCbA9f1tdWRK0RaCR3GPv50cMxcrz4X8k5LTSUD1Dkw47mKJEZQNunItRTkWwgtaUSo1RVFRIG9ZXiFYg==",
+      "license": "MIT"
+    },
+    "node_modules/rc-cascader": {
+      "version": "3.34.0",
+      "resolved": "https://registry.npmjs.org/rc-cascader/-/rc-cascader-3.34.0.tgz",
+      "integrity": "sha512-KpXypcvju9ptjW9FaN2NFcA2QH9E9LHKq169Y0eWtH4e/wHQ5Wh5qZakAgvb8EKZ736WZ3B0zLLOBsrsja5Dag==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.25.7",
+        "classnames": "^2.3.1",
+        "rc-select": "~14.16.2",
+        "rc-tree": "~5.13.0",
+        "rc-util": "^5.43.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-checkbox": {
+      "version": "3.5.0",
+      "resolved": "https://registry.npmjs.org/rc-checkbox/-/rc-checkbox-3.5.0.tgz",
+      "integrity": "sha512-aOAQc3E98HteIIsSqm6Xk2FPKIER6+5vyEFMZfo73TqM+VVAIqOkHoPjgKLqSNtVLWScoaM7vY2ZrGEheI79yg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "classnames": "^2.3.2",
+        "rc-util": "^5.25.2"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-collapse": {
+      "version": "3.9.0",
+      "resolved": "https://registry.npmjs.org/rc-collapse/-/rc-collapse-3.9.0.tgz",
+      "integrity": "sha512-swDdz4QZ4dFTo4RAUMLL50qP0EY62N2kvmk2We5xYdRwcRn8WcYtuetCJpwpaCbUfUt5+huLpVxhvmnK+PHrkA==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "classnames": "2.x",
+        "rc-motion": "^2.3.4",
+        "rc-util": "^5.27.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-dialog": {
+      "version": "9.6.0",
+      "resolved": "https://registry.npmjs.org/rc-dialog/-/rc-dialog-9.6.0.tgz",
+      "integrity": "sha512-ApoVi9Z8PaCQg6FsUzS8yvBEQy0ZL2PkuvAgrmohPkN3okps5WZ5WQWPc1RNuiOKaAYv8B97ACdsFU5LizzCqg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "@rc-component/portal": "^1.0.0-8",
+        "classnames": "^2.2.6",
+        "rc-motion": "^2.3.0",
+        "rc-util": "^5.21.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-drawer": {
+      "version": "7.3.0",
+      "resolved": "https://registry.npmjs.org/rc-drawer/-/rc-drawer-7.3.0.tgz",
+      "integrity": "sha512-DX6CIgiBWNpJIMGFO8BAISFkxiuKitoizooj4BDyee8/SnBn0zwO2FHrNDpqqepj0E/TFTDpmEBCyFuTgC7MOg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.23.9",
+        "@rc-component/portal": "^1.1.1",
+        "classnames": "^2.2.6",
+        "rc-motion": "^2.6.1",
+        "rc-util": "^5.38.1"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-dropdown": {
+      "version": "4.2.1",
+      "resolved": "https://registry.npmjs.org/rc-dropdown/-/rc-dropdown-4.2.1.tgz",
+      "integrity": "sha512-YDAlXsPv3I1n42dv1JpdM7wJ+gSUBfeyPK59ZpBD9jQhK9jVuxpjj3NmWQHOBceA1zEPVX84T2wbdb2SD0UjmA==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.18.3",
+        "@rc-component/trigger": "^2.0.0",
+        "classnames": "^2.2.6",
+        "rc-util": "^5.44.1"
+      },
+      "peerDependencies": {
+        "react": ">=16.11.0",
+        "react-dom": ">=16.11.0"
+      }
+    },
+    "node_modules/rc-field-form": {
+      "version": "2.7.1",
+      "resolved": "https://registry.npmjs.org/rc-field-form/-/rc-field-form-2.7.1.tgz",
+      "integrity": "sha512-vKeSifSJ6HoLaAB+B8aq/Qgm8a3dyxROzCtKNCsBQgiverpc4kWDQihoUwzUj+zNWJOykwSY4dNX3QrGwtVb9A==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.18.0",
+        "@rc-component/async-validator": "^5.0.3",
+        "rc-util": "^5.32.2"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-image": {
+      "version": "7.12.0",
+      "resolved": "https://registry.npmjs.org/rc-image/-/rc-image-7.12.0.tgz",
+      "integrity": "sha512-cZ3HTyyckPnNnUb9/DRqduqzLfrQRyi+CdHjdqgsyDpI3Ln5UX1kXnAhPBSJj9pVRzwRFgqkN7p9b6HBDjmu/Q==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.11.2",
+        "@rc-component/portal": "^1.0.2",
+        "classnames": "^2.2.6",
+        "rc-dialog": "~9.6.0",
+        "rc-motion": "^2.6.2",
+        "rc-util": "^5.34.1"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-input": {
+      "version": "1.8.0",
+      "resolved": "https://registry.npmjs.org/rc-input/-/rc-input-1.8.0.tgz",
+      "integrity": "sha512-KXvaTbX+7ha8a/k+eg6SYRVERK0NddX8QX7a7AnRvUa/rEH0CNMlpcBzBkhI0wp2C8C4HlMoYl8TImSN+fuHKA==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.11.1",
+        "classnames": "^2.2.1",
+        "rc-util": "^5.18.1"
+      },
+      "peerDependencies": {
+        "react": ">=16.0.0",
+        "react-dom": ">=16.0.0"
+      }
+    },
+    "node_modules/rc-input-number": {
+      "version": "9.5.0",
+      "resolved": "https://registry.npmjs.org/rc-input-number/-/rc-input-number-9.5.0.tgz",
+      "integrity": "sha512-bKaEvB5tHebUURAEXw35LDcnRZLq3x1k7GxfAqBMzmpHkDGzjAtnUL8y4y5N15rIFIg5IJgwr211jInl3cipag==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "@rc-component/mini-decimal": "^1.0.1",
+        "classnames": "^2.2.5",
+        "rc-input": "~1.8.0",
+        "rc-util": "^5.40.1"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-mentions": {
+      "version": "2.20.0",
+      "resolved": "https://registry.npmjs.org/rc-mentions/-/rc-mentions-2.20.0.tgz",
+      "integrity": "sha512-w8HCMZEh3f0nR8ZEd466ATqmXFCMGMN5UFCzEUL0bM/nGw/wOS2GgRzKBcm19K++jDyuWCOJOdgcKGXU3fXfbQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.22.5",
+        "@rc-component/trigger": "^2.0.0",
+        "classnames": "^2.2.6",
+        "rc-input": "~1.8.0",
+        "rc-menu": "~9.16.0",
+        "rc-textarea": "~1.10.0",
+        "rc-util": "^5.34.1"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-menu": {
+      "version": "9.16.1",
+      "resolved": "https://registry.npmjs.org/rc-menu/-/rc-menu-9.16.1.tgz",
+      "integrity": "sha512-ghHx6/6Dvp+fw8CJhDUHFHDJ84hJE3BXNCzSgLdmNiFErWSOaZNsihDAsKq9ByTALo/xkNIwtDFGIl6r+RPXBg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "@rc-component/trigger": "^2.0.0",
+        "classnames": "2.x",
+        "rc-motion": "^2.4.3",
+        "rc-overflow": "^1.3.1",
+        "rc-util": "^5.27.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-motion": {
+      "version": "2.9.5",
+      "resolved": "https://registry.npmjs.org/rc-motion/-/rc-motion-2.9.5.tgz",
+      "integrity": "sha512-w+XTUrfh7ArbYEd2582uDrEhmBHwK1ZENJiSJVb7uRxdE7qJSYjbO2eksRXmndqyKqKoYPc9ClpPh5242mV1vA==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.11.1",
+        "classnames": "^2.2.1",
+        "rc-util": "^5.44.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-notification": {
+      "version": "5.6.4",
+      "resolved": "https://registry.npmjs.org/rc-notification/-/rc-notification-5.6.4.tgz",
+      "integrity": "sha512-KcS4O6B4qzM3KH7lkwOB7ooLPZ4b6J+VMmQgT51VZCeEcmghdeR4IrMcFq0LG+RPdnbe/ArT086tGM8Snimgiw==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "classnames": "2.x",
+        "rc-motion": "^2.9.0",
+        "rc-util": "^5.20.1"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-overflow": {
+      "version": "1.5.0",
+      "resolved": "https://registry.npmjs.org/rc-overflow/-/rc-overflow-1.5.0.tgz",
+      "integrity": "sha512-Lm/v9h0LymeUYJf0x39OveU52InkdRXqnn2aYXfWmo8WdOonIKB2kfau+GF0fWq6jPgtdO9yMqveGcK6aIhJmg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.11.1",
+        "classnames": "^2.2.1",
+        "rc-resize-observer": "^1.0.0",
+        "rc-util": "^5.37.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-pagination": {
+      "version": "5.1.0",
+      "resolved": "https://registry.npmjs.org/rc-pagination/-/rc-pagination-5.1.0.tgz",
+      "integrity": "sha512-8416Yip/+eclTFdHXLKTxZvn70duYVGTvUUWbckCCZoIl3jagqke3GLsFrMs0bsQBikiYpZLD9206Ej4SOdOXQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "classnames": "^2.3.2",
+        "rc-util": "^5.38.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-picker": {
+      "version": "4.11.3",
+      "resolved": "https://registry.npmjs.org/rc-picker/-/rc-picker-4.11.3.tgz",
+      "integrity": "sha512-MJ5teb7FlNE0NFHTncxXQ62Y5lytq6sh5nUw0iH8OkHL/TjARSEvSHpr940pWgjGANpjCwyMdvsEV55l5tYNSg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.24.7",
+        "@rc-component/trigger": "^2.0.0",
+        "classnames": "^2.2.1",
+        "rc-overflow": "^1.3.2",
+        "rc-resize-observer": "^1.4.0",
+        "rc-util": "^5.43.0"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "date-fns": ">= 2.x",
+        "dayjs": ">= 1.x",
+        "luxon": ">= 3.x",
+        "moment": ">= 2.x",
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      },
+      "peerDependenciesMeta": {
+        "date-fns": {
+          "optional": true
+        },
+        "dayjs": {
+          "optional": true
+        },
+        "luxon": {
+          "optional": true
+        },
+        "moment": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/rc-progress": {
+      "version": "4.0.0",
+      "resolved": "https://registry.npmjs.org/rc-progress/-/rc-progress-4.0.0.tgz",
+      "integrity": "sha512-oofVMMafOCokIUIBnZLNcOZFsABaUw8PPrf1/y0ZBvKZNpOiu5h4AO9vv11Sw0p4Hb3D0yGWuEattcQGtNJ/aw==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "classnames": "^2.2.6",
+        "rc-util": "^5.16.1"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-rate": {
+      "version": "2.13.1",
+      "resolved": "https://registry.npmjs.org/rc-rate/-/rc-rate-2.13.1.tgz",
+      "integrity": "sha512-QUhQ9ivQ8Gy7mtMZPAjLbxBt5y9GRp65VcUyGUMF3N3fhiftivPHdpuDIaWIMOTEprAjZPC08bls1dQB+I1F2Q==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "classnames": "^2.2.5",
+        "rc-util": "^5.0.1"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-resize-observer": {
+      "version": "1.4.3",
+      "resolved": "https://registry.npmjs.org/rc-resize-observer/-/rc-resize-observer-1.4.3.tgz",
+      "integrity": "sha512-YZLjUbyIWox8E9i9C3Tm7ia+W7euPItNWSPX5sCcQTYbnwDb5uNpnLHQCG1f22oZWUhLw4Mv2tFmeWe68CDQRQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.20.7",
+        "classnames": "^2.2.1",
+        "rc-util": "^5.44.1",
+        "resize-observer-polyfill": "^1.5.1"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-segmented": {
+      "version": "2.7.0",
+      "resolved": "https://registry.npmjs.org/rc-segmented/-/rc-segmented-2.7.0.tgz",
+      "integrity": "sha512-liijAjXz+KnTRVnxxXG2sYDGd6iLL7VpGGdR8gwoxAXy2KglviKCxLWZdjKYJzYzGSUwKDSTdYk8brj54Bn5BA==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.11.1",
+        "classnames": "^2.2.1",
+        "rc-motion": "^2.4.4",
+        "rc-util": "^5.17.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.0.0",
+        "react-dom": ">=16.0.0"
+      }
+    },
+    "node_modules/rc-select": {
+      "version": "14.16.8",
+      "resolved": "https://registry.npmjs.org/rc-select/-/rc-select-14.16.8.tgz",
+      "integrity": "sha512-NOV5BZa1wZrsdkKaiK7LHRuo5ZjZYMDxPP6/1+09+FB4KoNi8jcG1ZqLE3AVCxEsYMBe65OBx71wFoHRTP3LRg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "@rc-component/trigger": "^2.1.1",
+        "classnames": "2.x",
+        "rc-motion": "^2.0.1",
+        "rc-overflow": "^1.3.1",
+        "rc-util": "^5.16.1",
+        "rc-virtual-list": "^3.5.2"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": "*",
+        "react-dom": "*"
+      }
+    },
+    "node_modules/rc-slider": {
+      "version": "11.1.9",
+      "resolved": "https://registry.npmjs.org/rc-slider/-/rc-slider-11.1.9.tgz",
+      "integrity": "sha512-h8IknhzSh3FEM9u8ivkskh+Ef4Yo4JRIY2nj7MrH6GQmrwV6mcpJf5/4KgH5JaVI1H3E52yCdpOlVyGZIeph5A==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "classnames": "^2.2.5",
+        "rc-util": "^5.36.0"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-steps": {
+      "version": "6.0.1",
+      "resolved": "https://registry.npmjs.org/rc-steps/-/rc-steps-6.0.1.tgz",
+      "integrity": "sha512-lKHL+Sny0SeHkQKKDJlAjV5oZ8DwCdS2hFhAkIjuQt1/pB81M0cA0ErVFdHq9+jmPmFw1vJB2F5NBzFXLJxV+g==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.16.7",
+        "classnames": "^2.2.3",
+        "rc-util": "^5.16.1"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-switch": {
+      "version": "4.1.0",
+      "resolved": "https://registry.npmjs.org/rc-switch/-/rc-switch-4.1.0.tgz",
+      "integrity": "sha512-TI8ufP2Az9oEbvyCeVE4+90PDSljGyuwix3fV58p7HV2o4wBnVToEyomJRVyTaZeqNPAp+vqeo4Wnj5u0ZZQBg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.21.0",
+        "classnames": "^2.2.1",
+        "rc-util": "^5.30.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-table": {
+      "version": "7.54.0",
+      "resolved": "https://registry.npmjs.org/rc-table/-/rc-table-7.54.0.tgz",
+      "integrity": "sha512-/wDTkki6wBTjwylwAGjpLKYklKo9YgjZwAU77+7ME5mBoS32Q4nAwoqhA2lSge6fobLW3Tap6uc5xfwaL2p0Sw==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "@rc-component/context": "^1.4.0",
+        "classnames": "^2.2.5",
+        "rc-resize-observer": "^1.1.0",
+        "rc-util": "^5.44.3",
+        "rc-virtual-list": "^3.14.2"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-tabs": {
+      "version": "15.7.0",
+      "resolved": "https://registry.npmjs.org/rc-tabs/-/rc-tabs-15.7.0.tgz",
+      "integrity": "sha512-ZepiE+6fmozYdWf/9gVp7k56PKHB1YYoDsKeQA1CBlJ/POIhjkcYiv0AGP0w2Jhzftd3AVvZP/K+V+Lpi2ankA==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.11.2",
+        "classnames": "2.x",
+        "rc-dropdown": "~4.2.0",
+        "rc-menu": "~9.16.0",
+        "rc-motion": "^2.6.2",
+        "rc-resize-observer": "^1.0.0",
+        "rc-util": "^5.34.1"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-textarea": {
+      "version": "1.10.2",
+      "resolved": "https://registry.npmjs.org/rc-textarea/-/rc-textarea-1.10.2.tgz",
+      "integrity": "sha512-HfaeXiaSlpiSp0I/pvWpecFEHpVysZ9tpDLNkxQbMvMz6gsr7aVZ7FpWP9kt4t7DB+jJXesYS0us1uPZnlRnwQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "classnames": "^2.2.1",
+        "rc-input": "~1.8.0",
+        "rc-resize-observer": "^1.0.0",
+        "rc-util": "^5.27.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-tooltip": {
+      "version": "6.4.0",
+      "resolved": "https://registry.npmjs.org/rc-tooltip/-/rc-tooltip-6.4.0.tgz",
+      "integrity": "sha512-kqyivim5cp8I5RkHmpsp1Nn/Wk+1oeloMv9c7LXNgDxUpGm+RbXJGL+OPvDlcRnx9DBeOe4wyOIl4OKUERyH1g==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.11.2",
+        "@rc-component/trigger": "^2.0.0",
+        "classnames": "^2.3.1",
+        "rc-util": "^5.44.3"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-tree": {
+      "version": "5.13.1",
+      "resolved": "https://registry.npmjs.org/rc-tree/-/rc-tree-5.13.1.tgz",
+      "integrity": "sha512-FNhIefhftobCdUJshO7M8uZTA9F4OPGVXqGfZkkD/5soDeOhwO06T/aKTrg0WD8gRg/pyfq+ql3aMymLHCTC4A==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.10.1",
+        "classnames": "2.x",
+        "rc-motion": "^2.0.1",
+        "rc-util": "^5.16.1",
+        "rc-virtual-list": "^3.5.1"
+      },
+      "engines": {
+        "node": ">=10.x"
+      },
+      "peerDependencies": {
+        "react": "*",
+        "react-dom": "*"
+      }
+    },
+    "node_modules/rc-tree-select": {
+      "version": "5.27.0",
+      "resolved": "https://registry.npmjs.org/rc-tree-select/-/rc-tree-select-5.27.0.tgz",
+      "integrity": "sha512-2qTBTzwIT7LRI1o7zLyrCzmo5tQanmyGbSaGTIf7sYimCklAToVVfpMC6OAldSKolcnjorBYPNSKQqJmN3TCww==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.25.7",
+        "classnames": "2.x",
+        "rc-select": "~14.16.2",
+        "rc-tree": "~5.13.0",
+        "rc-util": "^5.43.0"
+      },
+      "peerDependencies": {
+        "react": "*",
+        "react-dom": "*"
+      }
+    },
+    "node_modules/rc-upload": {
+      "version": "4.11.0",
+      "resolved": "https://registry.npmjs.org/rc-upload/-/rc-upload-4.11.0.tgz",
+      "integrity": "sha512-ZUyT//2JAehfHzjWowqROcwYJKnZkIUGWaTE/VogVrepSl7AFNbQf4+zGfX4zl9Vrj/Jm8scLO0R6UlPDKK4wA==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.18.3",
+        "classnames": "^2.2.5",
+        "rc-util": "^5.2.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-util": {
+      "version": "5.44.4",
+      "resolved": "https://registry.npmjs.org/rc-util/-/rc-util-5.44.4.tgz",
+      "integrity": "sha512-resueRJzmHG9Q6rI/DfK6Kdv9/Lfls05vzMs1Sk3M2P+3cJa+MakaZyWY8IPfehVuhPJFKrIY1IK4GqbiaiY5w==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.18.3",
+        "react-is": "^18.2.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/rc-util/node_modules/react-is": {
+      "version": "18.3.1",
+      "resolved": "https://registry.npmjs.org/react-is/-/react-is-18.3.1.tgz",
+      "integrity": "sha512-/LLMVyas0ljjAtoYiPqYiL8VWXzUUdThrmU5+n20DZv+a+ClRoevUzw5JxU+Ieh5/c87ytoTBV9G1FiKfNJdmg==",
+      "license": "MIT"
+    },
+    "node_modules/rc-virtual-list": {
+      "version": "3.19.2",
+      "resolved": "https://registry.npmjs.org/rc-virtual-list/-/rc-virtual-list-3.19.2.tgz",
+      "integrity": "sha512-Ys6NcjwGkuwkeaWBDqfI3xWuZ7rDiQXlH1o2zLfFzATfEgXcqpk8CkgMfbJD81McqjcJVez25a3kPxCR807evA==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.20.0",
+        "classnames": "^2.2.6",
+        "rc-resize-observer": "^1.0.0",
+        "rc-util": "^5.36.0"
+      },
+      "engines": {
+        "node": ">=8.x"
+      },
+      "peerDependencies": {
+        "react": ">=16.9.0",
+        "react-dom": ">=16.9.0"
+      }
+    },
+    "node_modules/react": {
+      "version": "18.3.1",
+      "resolved": "https://registry.npmjs.org/react/-/react-18.3.1.tgz",
+      "integrity": "sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ==",
+      "license": "MIT",
+      "dependencies": {
+        "loose-envify": "^1.1.0"
+      },
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/react-cytoscapejs": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/react-cytoscapejs/-/react-cytoscapejs-2.0.0.tgz",
+      "integrity": "sha512-t3SSl1DQy7+JQjN+8QHi1anEJlM3i3aAeydHTsJwmjo/isyKK7Rs7oCvU6kZsB9NwZidzZQR21Vm2PcBLG/Tjg==",
+      "license": "MIT",
+      "dependencies": {
+        "prop-types": "^15.8.1"
+      },
+      "peerDependencies": {
+        "cytoscape": "^3.2.19",
+        "react": ">=15.0.0"
+      }
+    },
+    "node_modules/react-dom": {
+      "version": "18.3.1",
+      "resolved": "https://registry.npmjs.org/react-dom/-/react-dom-18.3.1.tgz",
+      "integrity": "sha512-5m4nQKp+rZRb09LNH59GM4BxTh9251/ylbKIbpe7TpGxfJ+9kv6BLkLBXIjjspbgbnIBNqlI23tRnTWT0snUIw==",
+      "license": "MIT",
+      "dependencies": {
+        "loose-envify": "^1.1.0",
+        "scheduler": "^0.23.2"
+      },
+      "peerDependencies": {
+        "react": "^18.3.1"
+      }
+    },
+    "node_modules/react-is": {
+      "version": "16.13.1",
+      "resolved": "https://registry.npmjs.org/react-is/-/react-is-16.13.1.tgz",
+      "integrity": "sha512-24e6ynE2H+OKt4kqsOvNd8kBpV65zoxbA4BVsEOB3ARVWQki/DHzaUoC5KuON/BiccDaCCTZBuOcfZs70kR8bQ==",
+      "license": "MIT"
+    },
+    "node_modules/react-refresh": {
+      "version": "0.17.0",
+      "resolved": "https://registry.npmjs.org/react-refresh/-/react-refresh-0.17.0.tgz",
+      "integrity": "sha512-z6F7K9bV85EfseRCp2bzrpyQ0Gkw1uLoCel9XBVWPg/TjRj94SkJzUTGfOa4bs7iJvBWtQG0Wq7wnI0syw3EBQ==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/react-router": {
+      "version": "6.30.1",
+      "resolved": "https://registry.npmjs.org/react-router/-/react-router-6.30.1.tgz",
+      "integrity": "sha512-X1m21aEmxGXqENEPG3T6u0Th7g0aS4ZmoNynhbs+Cn+q+QGTLt+d5IQ2bHAXKzKcxGJjxACpVbnYQSCRcfxHlQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@remix-run/router": "1.23.0"
+      },
+      "engines": {
+        "node": ">=14.0.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.8"
+      }
+    },
+    "node_modules/react-router-dom": {
+      "version": "6.30.1",
+      "resolved": "https://registry.npmjs.org/react-router-dom/-/react-router-dom-6.30.1.tgz",
+      "integrity": "sha512-llKsgOkZdbPU1Eg3zK8lCn+sjD9wMRZZPuzmdWWX5SUs8OFkN5HnFVC0u5KMeMaC9aoancFI/KoLuKPqN+hxHw==",
+      "license": "MIT",
+      "dependencies": {
+        "@remix-run/router": "1.23.0",
+        "react-router": "6.30.1"
+      },
+      "engines": {
+        "node": ">=14.0.0"
+      },
+      "peerDependencies": {
+        "react": ">=16.8",
+        "react-dom": ">=16.8"
+      }
+    },
+    "node_modules/resize-observer-polyfill": {
+      "version": "1.5.1",
+      "resolved": "https://registry.npmjs.org/resize-observer-polyfill/-/resize-observer-polyfill-1.5.1.tgz",
+      "integrity": "sha512-LwZrotdHOo12nQuZlHEmtuXdqGoOD0OhaxopaNFxWzInpEgaLWoVuAMbTzixuosCx2nEG58ngzW3vxdWoxIgdg==",
+      "license": "MIT"
+    },
+    "node_modules/rollup": {
+      "version": "4.52.5",
+      "resolved": "https://registry.npmjs.org/rollup/-/rollup-4.52.5.tgz",
+      "integrity": "sha512-3GuObel8h7Kqdjt0gxkEzaifHTqLVW56Y/bjN7PSQtkKr0w3V/QYSdt6QWYtd7A1xUtYQigtdUfgj1RvWVtorw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/estree": "1.0.8"
+      },
+      "bin": {
+        "rollup": "dist/bin/rollup"
+      },
+      "engines": {
+        "node": ">=18.0.0",
+        "npm": ">=8.0.0"
+      },
+      "optionalDependencies": {
+        "@rollup/rollup-android-arm-eabi": "4.52.5",
+        "@rollup/rollup-android-arm64": "4.52.5",
+        "@rollup/rollup-darwin-arm64": "4.52.5",
+        "@rollup/rollup-darwin-x64": "4.52.5",
+        "@rollup/rollup-freebsd-arm64": "4.52.5",
+        "@rollup/rollup-freebsd-x64": "4.52.5",
+        "@rollup/rollup-linux-arm-gnueabihf": "4.52.5",
+        "@rollup/rollup-linux-arm-musleabihf": "4.52.5",
+        "@rollup/rollup-linux-arm64-gnu": "4.52.5",
+        "@rollup/rollup-linux-arm64-musl": "4.52.5",
+        "@rollup/rollup-linux-loong64-gnu": "4.52.5",
+        "@rollup/rollup-linux-ppc64-gnu": "4.52.5",
+        "@rollup/rollup-linux-riscv64-gnu": "4.52.5",
+        "@rollup/rollup-linux-riscv64-musl": "4.52.5",
+        "@rollup/rollup-linux-s390x-gnu": "4.52.5",
+        "@rollup/rollup-linux-x64-gnu": "4.52.5",
+        "@rollup/rollup-linux-x64-musl": "4.52.5",
+        "@rollup/rollup-openharmony-arm64": "4.52.5",
+        "@rollup/rollup-win32-arm64-msvc": "4.52.5",
+        "@rollup/rollup-win32-ia32-msvc": "4.52.5",
+        "@rollup/rollup-win32-x64-gnu": "4.52.5",
+        "@rollup/rollup-win32-x64-msvc": "4.52.5",
+        "fsevents": "~2.3.2"
+      }
+    },
+    "node_modules/scheduler": {
+      "version": "0.23.2",
+      "resolved": "https://registry.npmjs.org/scheduler/-/scheduler-0.23.2.tgz",
+      "integrity": "sha512-UOShsPwz7NrMUqhR6t0hWjFduvOzbtv7toDH1/hIrfRNIDBnnBWd0CwJTGvTpngVlmwGCdP9/Zl/tVrDqcuYzQ==",
+      "license": "MIT",
+      "dependencies": {
+        "loose-envify": "^1.1.0"
+      }
+    },
+    "node_modules/scroll-into-view-if-needed": {
+      "version": "3.1.0",
+      "resolved": "https://registry.npmjs.org/scroll-into-view-if-needed/-/scroll-into-view-if-needed-3.1.0.tgz",
+      "integrity": "sha512-49oNpRjWRvnU8NyGVmUaYG4jtTkNonFZI86MmGRDqBphEK2EXT9gdEUoQPZhuBM8yWHxCWbobltqYO5M4XrUvQ==",
+      "license": "MIT",
+      "dependencies": {
+        "compute-scroll-into-view": "^3.0.2"
+      }
+    },
+    "node_modules/semver": {
+      "version": "6.3.1",
+      "resolved": "https://registry.npmjs.org/semver/-/semver-6.3.1.tgz",
+      "integrity": "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==",
+      "dev": true,
+      "license": "ISC",
+      "bin": {
+        "semver": "bin/semver.js"
+      }
+    },
+    "node_modules/source-map-js": {
+      "version": "1.2.1",
+      "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz",
+      "integrity": "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==",
+      "dev": true,
+      "license": "BSD-3-Clause",
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/string-convert": {
+      "version": "0.2.1",
+      "resolved": "https://registry.npmjs.org/string-convert/-/string-convert-0.2.1.tgz",
+      "integrity": "sha512-u/1tdPl4yQnPBjnVrmdLo9gtuLvELKsAoRapekWggdiQNvvvum+jYF329d84NAa660KQw7pB2n36KrIKVoXa3A==",
+      "license": "MIT"
+    },
+    "node_modules/stylis": {
+      "version": "4.3.6",
+      "resolved": "https://registry.npmjs.org/stylis/-/stylis-4.3.6.tgz",
+      "integrity": "sha512-yQ3rwFWRfwNUY7H5vpU0wfdkNSnvnJinhF9830Swlaxl03zsOjCfmX0ugac+3LtK0lYSgwL/KXc8oYL3mG4YFQ==",
+      "license": "MIT"
+    },
+    "node_modules/throttle-debounce": {
+      "version": "5.0.2",
+      "resolved": "https://registry.npmjs.org/throttle-debounce/-/throttle-debounce-5.0.2.tgz",
+      "integrity": "sha512-B71/4oyj61iNH0KeCamLuE2rmKuTO5byTOSVwECM5FA7TiAiAW+UqTKZ9ERueC4qvgSttUhdmq1mXC3kJqGX7A==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=12.22"
+      }
+    },
+    "node_modules/toggle-selection": {
+      "version": "1.0.6",
+      "resolved": "https://registry.npmjs.org/toggle-selection/-/toggle-selection-1.0.6.tgz",
+      "integrity": "sha512-BiZS+C1OS8g/q2RRbJmy59xpyghNBqrr6k5L/uKBGRsTfxmu3ffiRnd8mlGPUVayg8pvfi5urfnu8TU7DVOkLQ==",
+      "license": "MIT"
+    },
+    "node_modules/typescript": {
+      "version": "5.9.3",
+      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+      "dev": true,
+      "license": "Apache-2.0",
+      "bin": {
+        "tsc": "bin/tsc",
+        "tsserver": "bin/tsserver"
+      },
+      "engines": {
+        "node": ">=14.17"
+      }
+    },
+    "node_modules/undici-types": {
+      "version": "7.16.0",
+      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-7.16.0.tgz",
+      "integrity": "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==",
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "peer": true
+    },
+    "node_modules/update-browserslist-db": {
+      "version": "1.1.4",
+      "resolved": "https://registry.npmjs.org/update-browserslist-db/-/update-browserslist-db-1.1.4.tgz",
+      "integrity": "sha512-q0SPT4xyU84saUX+tomz1WLkxUbuaJnR1xWt17M7fJtEJigJeWUNGUqrauFXsHnqev9y9JTRGwk13tFBuKby4A==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/browserslist"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/browserslist"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "escalade": "^3.2.0",
+        "picocolors": "^1.1.1"
+      },
+      "bin": {
+        "update-browserslist-db": "cli.js"
+      },
+      "peerDependencies": {
+        "browserslist": ">= 4.21.0"
+      }
+    },
+    "node_modules/vite": {
+      "version": "5.4.21",
+      "resolved": "https://registry.npmjs.org/vite/-/vite-5.4.21.tgz",
+      "integrity": "sha512-o5a9xKjbtuhY6Bi5S3+HvbRERmouabWbyUcpXXUA1u+GNUKoROi9byOJ8M0nHbHYHkYICiMlqxkg1KkYmm25Sw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "esbuild": "^0.21.3",
+        "postcss": "^8.4.43",
+        "rollup": "^4.20.0"
+      },
+      "bin": {
+        "vite": "bin/vite.js"
+      },
+      "engines": {
+        "node": "^18.0.0 || >=20.0.0"
+      },
+      "funding": {
+        "url": "https://github.com/vitejs/vite?sponsor=1"
+      },
+      "optionalDependencies": {
+        "fsevents": "~2.3.3"
+      },
+      "peerDependencies": {
+        "@types/node": "^18.0.0 || >=20.0.0",
+        "less": "*",
+        "lightningcss": "^1.21.0",
+        "sass": "*",
+        "sass-embedded": "*",
+        "stylus": "*",
+        "sugarss": "*",
+        "terser": "^5.4.0"
+      },
+      "peerDependenciesMeta": {
+        "@types/node": {
+          "optional": true
+        },
+        "less": {
+          "optional": true
+        },
+        "lightningcss": {
+          "optional": true
+        },
+        "sass": {
+          "optional": true
+        },
+        "sass-embedded": {
+          "optional": true
+        },
+        "stylus": {
+          "optional": true
+        },
+        "sugarss": {
+          "optional": true
+        },
+        "terser": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/yallist": {
+      "version": "3.1.1",
+      "resolved": "https://registry.npmjs.org/yallist/-/yallist-3.1.1.tgz",
+      "integrity": "sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==",
+      "dev": true,
+      "license": "ISC"
+    }
+  }
+}
+
+
+============================================================
+FILE: frontend\package.json
+============================================================
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.6.1",
+    "antd": "^5.28.0",
+    "axios": "^1.13.2",
+    "cytoscape": "^3.33.1",
+    "cytoscape-dagre": "^2.5.0",
+    "react": "^18.2.0",
+    "react-cytoscapejs": "^2.0.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.20.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.37",
+    "@types/react-dom": "^18.2.15",
+    "@vitejs/plugin-react": "^4.2.0",
+    "typescript": "^5.2.2",
+    "vite": "^5.0.0"
+  }
+}
+
+
+============================================================
+FILE: frontend\README.md
+============================================================
+# React + TypeScript + Vite
+
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+
+Currently, two official plugins are available:
+
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+
+## React Compiler
+
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+
+## Expanding the ESLint configuration
+
+If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+
+```js
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
+
+      // Remove tseslint.configs.recommended and replace with this
+      tseslint.configs.recommendedTypeChecked,
+      // Alternatively, use this for stricter rules
+      tseslint.configs.strictTypeChecked,
+      // Optionally, add this for stylistic rules
+      tseslint.configs.stylisticTypeChecked,
+
+      // Other configs...
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
+```
+
+You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+
+```js
+// eslint.config.js
+import reactX from 'eslint-plugin-react-x'
+import reactDom from 'eslint-plugin-react-dom'
+
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
+      // Enable lint rules for React
+      reactX.configs['recommended-typescript'],
+      // Enable lint rules for React DOM
+      reactDom.configs.recommended,
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
+```
+
+
+============================================================
+FILE: frontend\tsconfig.app.json
+============================================================
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "types": ["vite/client"],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true
+  },
+  "include": ["src"]
+}
+
+
+============================================================
+FILE: frontend\tsconfig.json
+============================================================
+{
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}
+
+
+============================================================
+FILE: frontend\tsconfig.node.json
+============================================================
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true
+  },
+  "include": ["vite.config.ts"]
+}
+
+
+============================================================
+FILE: frontend\vite.config.ts
+============================================================
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',  // Proxy to backend
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, '/api')
+      }
+    }
+  }
+})
+
+============================================================
+FILE: frontend\src\App.tsx
+============================================================
+import React from 'react';
+import { createBrowserRouter, RouterProvider, Navigate, Outlet } from 'react-router-dom';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { WorkflowProvider } from './context/WorkflowContext';
+import Login from './pages/Login';
+import Dashboard from './pages/Dashboard';
+import Diagnostics from './pages/Diagnostics';
+import Compiler from './pages/Compiler';
+import Inference from './pages/Inference';
+import Sidebar from './components/Sidebar';
+import './App.css';
+
+// Компонент Layout для защищенных страниц (с Sidebar)
+const Layout: React.FC = () => {
+  const { isAuthenticated } = useAuth();
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return (
+    <div className="app">
+      <Sidebar isOpen={true} />
+      <div className="main-content">
+        <Outlet /> {/* Здесь рендерятся вложенные маршруты */}
+      </div>
+    </div>
+  );
+};
+
+// Компонент для публичных страниц (Login без Sidebar)
+const PublicLayout: React.FC = () => {
+  const { isAuthenticated } = useAuth();
+
+  // Если уже авторизован, перенаправляем на дашборд
+  if (isAuthenticated) {
+    return <Navigate to="/" replace />;
+  }
+
+  return <Outlet />;
+};
+
+// Конфигурация маршрутов с future flags
+const router = createBrowserRouter([
+  {
+    element: <PublicLayout />,
+    children: [
+      { path: "/login", element: <Login /> },
+    ],
+  },
+  {
+    element: <Layout />,
+    children: [
+      { path: "/", element: <Dashboard /> },
+      { path: "/diagnostics", element: <Diagnostics /> },
+      { path: "/compiler", element: <Compiler /> },
+      { path: "/inference", element: <Inference /> },
+    ],
+  },
+], {
+  future: {
+    v7_startTransition: true,
+    v7_relativeSplatPath: true,
+  },
+});
+
+function App() {
+  return (
+    <AuthProvider>
+      <WorkflowProvider>
+        <RouterProvider router={router} />
+      </WorkflowProvider>
+    </AuthProvider>
+  );
+}
+
+export default App;
+
+============================================================
+FILE: frontend\src\main.tsx
+============================================================
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.tsx'
+import './index.css'
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)
+
+============================================================
+FILE: frontend\src\components\InferenceToolbar.tsx
+============================================================
+// frontend/src/components/InferenceToolbar.tsx
+
+import React from 'react';
+
+interface ToolbarProps {
+  onUpload: () => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onModelProps: () => void;
+  onNodeProps: () => void;
+}
+
+const InferenceToolbar: React.FC<ToolbarProps> = ({
+  onUpload, onZoomIn, onZoomOut, onModelProps, onNodeProps
+}) => {
+  return (
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <button onClick={onUpload} style={btnStyle}>Upload Model</button>
+      <button onClick={onZoomIn} style={btnStyle}>Zoom In</button>
+      <button onClick={onZoomOut} style={btnStyle}>Zoom Out</button>
+      <button onClick={onModelProps} style={btnStyle}>Model</button>
+      <button onClick={onNodeProps} style={btnStyle}>Node</button>
+    </div>
+  );
+};
+
+const btnStyle: React.CSSProperties = {
+  padding: '8px 12px',
+  fontSize: 14,
+  border: '1px solid #ddd',
+  background: '#fff',
+  borderRadius: 6,
+  cursor: 'pointer',
+  transition: '0.2s',
+};
+
+export default InferenceToolbar;
+
+============================================================
+FILE: frontend\src\components\LoginForm.tsx
+============================================================
+import React, { useState } from 'react';
+import api from '../services/api';
+import axios from 'axios';
+
+const LoginForm: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const res = await axios.post('/api/login', new URLSearchParams({ username, password }), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+      localStorage.setItem('token', res.data.access_token);
+      onLogin();
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Login failed');
+    }
+  };
+
+  return (
+    <div style={{
+      display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh',
+      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+    }}>
+      <div style={{
+        background: 'white', padding: '40px', borderRadius: '10px', boxShadow: '0 10px 30px rgba(0,0,0,0.3)',
+        width: '400px', textAlign: 'center'
+      }}>
+        <h1 style={{ marginBottom: '20px', color: '#333' }}>Neuro App Login</h1>
+        <form onSubmit={handleSubmit}>
+          <input
+            type="text"
+            placeholder="Username"
+            value={username}
+            onChange={e => setUsername(e.target.value)}
+            style={{ width: '100%', padding: '12px', margin: '10px 0', borderRadius: '5px', border: '1px solid #ccc' }}
+            required
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            style={{ width: '100%', padding: '12px', margin: '10px 0', borderRadius: '5px', border: '1px solid #ccc' }}
+            required
+          />
+          <button type="submit" style={{
+            width: '100%', padding: '12px', background: '#667eea', color: 'white',
+            border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '16px'
+          }}>
+            Login
+          </button>
+        </form>
+        {error && <p style={{ color: 'red', marginTop: '10px' }}>{error}</p>}
+        <p style={{ marginTop: '20px', color: '#666' }}>Demo: test / test</p>
+      </div>
+    </div>
+  );
+};
+
+export default LoginForm;
+
+============================================================
+FILE: frontend\src\components\OnnxGraph.tsx
+============================================================
+import React, { useEffect, useRef, useState } from 'react';
+import Cytoscape from 'cytoscape';
+import { Card, Tabs } from 'antd';
+
+interface OnnxGraphProps {
+  modelPath?: string;
+}
+
+const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath }) => {
+  const [activeTab, setActiveTab] = useState('graph');
+  const containerRef = useRef<HTMLDivElement>(null);
+  const cyRef = useRef<Cytoscape.Core | null>(null);
+
+  useEffect(() => {
+    if (!modelPath || !containerRef.current) return;
+
+    // Очистка предыдущего графа
+    if (cyRef.current) {
+      cyRef.current.destroy();
+      cyRef.current = null;
+    }
+
+    const parseAndRender = async () => {
+      try {
+        // Моковые данные для визуализации
+        const elements = {
+          nodes: [
+            { data: { id: 'input', label: 'Input' } },
+            { data: { id: 'conv1', label: 'Conv1' } },
+            { data: { id: 'relu1', label: 'ReLU1' } },
+            { data: { id: 'output', label: 'Output' } },
+          ],
+          edges: [
+            { data: { source: 'input', target: 'conv1' } },
+            { data: { source: 'conv1', target: 'relu1' } },
+            { data: { source: 'relu1', target: 'output' } },
+          ],
+        };
+
+        const cy = Cytoscape({
+          container: containerRef.current,
+          elements: elements,
+          style: [
+            {
+              selector: 'node',
+              style: {
+                'background-color': '#1890ff',
+                'label': 'data(label)',
+                'text-valign': 'center',
+                'color': '#fff',
+                'text-outline-width': 2,
+                'text-outline-color': '#1890ff',
+                'height': 50,
+                'width': 120,
+              },
+            },
+            {
+              selector: 'edge',
+              style: {
+                'curve-style': 'bezier',
+                'source-arrow-shape': 'triangle',
+                'line-color': '#ddd',
+                'target-arrow-color': '#ddd',
+              },
+            },
+          ],
+          layout: {
+            name: 'grid',
+            rows: 1,
+          },
+        });
+
+        cyRef.current = cy;
+      } catch (error) {
+        console.error('Error rendering graph:', error);
+      }
+    };
+
+    parseAndRender();
+
+    return () => {
+      if (cyRef.current) {
+        cyRef.current.destroy();
+        cyRef.current = null;
+      }
+    };
+  }, [modelPath]);
+
+  const items = [
+    {
+      key: 'graph',
+      label: 'Graph',
+      children: (
+        <div
+          ref={containerRef}
+          style={{
+            width: '100%',
+            height: '600px',
+            border: '1px solid #d9d9d9',
+            background: '#fafafa'
+          }}
+        />
+      ),
+    },
+  ];
+
+  if (!modelPath) {
+    return <div style={{ padding: 20, textAlign: 'center' }}>Upload an ONNX file to visualize the graph</div>;
+  }
+
+  return <Tabs activeKey={activeTab} onChange={setActiveTab} items={items} />;
+};
+
+export default OnnxGraph;
+
+============================================================
+FILE: frontend\src\components\Sidebar.tsx
+============================================================
+import React from 'react';
+import { Link, useLocation } from 'react-router-dom';
+import { useWorkflow } from '../context/WorkflowContext';
+
+interface SidebarProps {
+  isOpen: boolean;
+}
+
+const Sidebar: React.FC<SidebarProps> = ({ isOpen }) => {
+  const { selectedDevice, currentStep } = useWorkflow();
+  const location = useLocation();
+
+  const menuItems = [
+    { path: '/', label: 'Dashboard', icon: '🏠', step: 'dashboard' },
+    { path: '/diagnostics', label: 'Diagnostics', icon: '🔧', step: 'diagnostics' },
+    { path: '/compiler', label: 'Compiler', icon: '⚙️', step: 'compiler' },
+    { path: '/inference', label: 'Inference', icon: '🧠', step: 'inference' },
+  ];
+
+  const isStepEnabled = (step: string) => {
+    const steps = ['dashboard', 'diagnostics', 'compiler', 'inference'];
+    return steps.indexOf(step) <= steps.indexOf(currentStep);
+  };
+
+  return (
+    <div className={`sidebar ${isOpen ? 'open' : 'closed'}`}>
+      <ul>
+        {menuItems.map(item => {
+          const enabled = isStepEnabled(item.step);
+          const isActive = location.pathname === item.path;
+
+          return (
+            <li key={item.path}>
+              <Link
+                to={enabled ? item.path : '#'}
+                className={`${isActive ? 'active' : ''} ${!enabled ? 'disabled' : ''}`}
+              >
+                <span>{item.icon}</span>
+                {item.label}
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+};
+
+export default Sidebar;
+
+============================================================
+FILE: frontend\src\components\SidebarContent.tsx
+============================================================
+// frontend/src/components/SidebarContent.tsx
+
+import React, { useState, useEffect } from 'react';
+
+interface WeightItem {
+  name: string;
+  shape: number[];
+  dtype: string;
+  values: number[];
+}
+
+interface SidebarContentProps {
+  type: 'metadata' | 'node' | 'weights';
+  data: any;
+  selectedNode: any;
+}
+
+const SidebarContent: React.FC<SidebarContentProps> = ({ type, data, selectedNode }) => {
+  const [channelIndex, setChannelIndex] = useState(0);
+
+  useEffect(() => {
+    setChannelIndex(0);
+  }, [selectedNode?.name]);
+
+  if (!data) return <p>Upload an ONNX model to view details.</p>;
+
+  if (type === 'metadata') {
+    return (
+      <div>
+        <h3>Model Metadata</h3>
+        <pre style={{ fontSize: 12, whiteSpace: 'pre-wrap', background: '#f5f5f5', padding: 8, borderRadius: 4 }}>
+          {JSON.stringify(data.model_metadata || {}, null, 2)}
+        </pre>
+      </div>
+    );
+  }
+
+  if (type === 'node' && selectedNode) {
+    const allNodeWeights: WeightItem[] = selectedNode.inputs
+      .map((input: string) => {
+        const w = data.weights?.[input];
+        if (!w) return null;
+        return { name: input, shape: w.shape, dtype: w.dtype, values: w.values };
+      })
+      .filter(Boolean) as WeightItem[];
+
+    const biasWeight = allNodeWeights.find(w => w.name.toLowerCase().includes('bias'));
+    const mainWeights = biasWeight ? allNodeWeights.filter(w => w !== biasWeight) : allNodeWeights;
+
+    const getMatrix = (weight: WeightItem, index: number): number[][] => {
+      const shape = weight.shape;
+      const values = weight.values;
+      const matrix: number[][] = [];
+
+      if (shape.length === 4) {
+        const [outC, inC, H, W] = shape;
+        const kernelSize = H * W;
+        for (let i = 0; i < inC; i++) {
+          const row: number[] = [];
+          for (let h = 0; h < H; h++) {
+            for (let w = 0; w < W; w++) {
+              const idx = index * inC * kernelSize + i * kernelSize + h * W + w;
+              row.push(values[idx]);
+            }
+          }
+          matrix.push(row);
+        }
+      } else if (shape.length === 2) {
+        const [outF, inF] = shape;
+        const row: number[] = [];
+        for (let i = 0; i < inF; i++) {
+          row.push(values[index * inF + i]);
+        }
+        matrix.push(row);
+      }
+
+      return matrix;
+    };
+
+    const getBiasColumn = (weight: WeightItem): number[] => {
+      return weight.values;
+    };
+
+    return (
+      <div>
+        <h3>Node: {selectedNode.name}</h3>
+        <p><strong>Op Type:</strong> {selectedNode.op_type}</p>
+        <p><strong>Inputs:</strong> {selectedNode.inputs?.join(', ') || '—'}</p>
+        <p><strong>Outputs:</strong> {selectedNode.outputs?.join(', ') || '—'}</p>
+
+        <h4>Attributes:</h4>
+        <pre style={{ fontSize: 11, background: '#f5f5f5', padding: 8, borderRadius: 4 }}>
+          {JSON.stringify(selectedNode.attributes || {}, null, 2)}
+        </pre>
+
+        <h4>Weights ({allNodeWeights.length})</h4>
+
+        {mainWeights.map(weight => {
+          const shape = weight.shape;
+          const isConv = shape.length === 4;
+          const isFC = shape.length === 2;
+          if (!isConv && !isFC) return null;
+
+          const outDim = isConv ? shape[0] : shape[0];
+          const matrix = getMatrix(weight, channelIndex);
+
+          return (
+            <div
+              key={weight.name}
+              style={{
+                marginBottom: 28,
+                padding: 16,
+                border: '1px solid #e0e0e0',
+                borderRadius: 8,
+                background: '#fafafa',
+                fontSize: 12,
+              }}
+            >
+              <strong style={{ color: '#1565c0', fontSize: 14, display: 'block', marginBottom: 6 }}>
+                {weight.name}
+              </strong>
+              <div style={{ color: '#555', fontSize: 11, marginBottom: 12 }}>
+                <strong>Shape:</strong> {shape.join(' × ')} | <strong>DType:</strong> {weight.dtype}
+                <span style={{ marginLeft: 12, color: '#777' }}>
+                  ({weight.values.length.toLocaleString()} values)
+                </span>
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 11, color: '#555', marginBottom: 6 }}>
+                  {isConv ? 'Output Channel' : 'Output Neuron'}: {channelIndex + 1} / {outDim}
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max={outDim - 1}
+                  value={channelIndex}
+                  onChange={e => setChannelIndex(Number(e.target.value))}
+                  style={{ width: '100%' }}
+                />
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(${matrix[0]?.length || 1}, 1fr)`,
+                  gap: '5px',
+                  fontFamily: 'monospace',
+                  fontSize: 10,
+                  maxHeight: '300px',
+                  overflowY: 'auto',
+                  padding: '4px',
+                  background: '#fff',
+                  borderRadius: 4,
+                }}
+              >
+                {matrix.map((row, i) => (
+                  <React.Fragment key={i}>
+                    {row.map((val, j) => (
+                      <div
+                        key={j}
+                        style={{
+                          padding: '6px 3px',
+                          textAlign: 'center',
+                          background: val >= 0 ? '#e8f5e9' : '#ffebee',
+                          borderRadius: 4,
+                          color: Math.abs(val) > 0.5 ? '#b71c1c' : '#333',
+                          fontWeight: Math.abs(val) > 1 ? 'bold' : 'normal',
+                          minWidth: '50px',
+                        }}
+                      >
+                        {val.toFixed(4)}
+                      </div>
+                    ))}
+                  </React.Fragment>
+                ))}
+              </div>
+
+              {isFC && (
+                <div style={{ marginTop: 6, fontSize: 10, color: '#888', textAlign: 'center' }}>
+                  Input Feature {channelIndex * shape[1] + 1} → {Math.min((channelIndex + 1) * shape[1], shape[1])}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {/* Bias — в столбец */}
+        {biasWeight && (
+          <div style={{ marginTop: 28, paddingTop: 16, borderTop: '2px dashed #bbb', paddingBottom: 20 }}>
+            <h4 style={{ color: '#c62828', marginBottom: 12 }}>Bias</h4>
+            <div
+              style={{
+                padding: 14,
+                border: '1px solid #ffcdd2',
+                borderRadius: 8,
+                background: '#fff5f5',
+                fontSize: 12,
+              }}
+            >
+              <strong style={{ color: '#b71c1c', display: 'block', marginBottom: 6 }}>
+                {biasWeight.name}
+              </strong>
+              <div style={{ color: '#555', fontSize: 11, marginBottom: 10 }}>
+                <strong>Shape:</strong> {biasWeight.shape.join(' × ')} | <strong>DType:</strong> {biasWeight.dtype}
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr',
+                  gap: '4px',
+                  fontFamily: 'monospace',
+                  fontSize: 10.5,
+                  maxHeight: '300px',
+                  overflowY: 'auto',
+                  paddingBottom: '10px', // Дополнительный отступ внутри скролла
+                }}
+              >
+                {getBiasColumn(biasWeight).map((val, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      padding: '6px 8px',
+                      background: val >= 0 ? '#e8f5e9' : '#ffebee',
+                      borderRadius: 4,
+                      color: Math.abs(val) > 0.5 ? '#b71c1c' : '#333',
+                      textAlign: 'center',
+                    }}
+                  >
+                    {val.toFixed(4)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {allNodeWeights.length === 0 && <p>No weights.</p>}
+      </div>
+    );
+  }
+
+  return <p>Select a node.</p>;
+};
+
+export default SidebarContent;
+
+============================================================
+FILE: frontend\src\context\AuthContext.tsx
+============================================================
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import api from '../services/api';
+
+interface User {
+  username: string;
+  role?: string;
+}
+
+interface AuthContextType {
+  user: User | null;
+  isAuthenticated: boolean;
+  login: (username: string, password: string) => Promise<void>;
+  logout: () => void;
+  loading: boolean;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const loadUser = async () => {
+      const token = localStorage.getItem('access_token');
+      if (token) {
+        try {
+          const response = await api.get('/auth/me');
+          setUser(response.data);
+        } catch (error) {
+          localStorage.removeItem('access_token');
+        }
+      }
+    };
+    loadUser();
+  }, []);
+
+  const login = async (username: string, password: string) => {
+    setLoading(true);
+    try {
+      // Создаем формат application/x-www-form-urlencoded
+      const params = new URLSearchParams();
+      params.append('username', username);
+      params.append('password', password);
+
+      // Логируем что отправляем
+      console.log('Sending login data:', { username, password });
+      console.log('Content-Type:', 'application/x-www-form-urlencoded');
+      console.log('URL:', '/auth/login');
+
+      const response = await api.post('/auth/login', params.toString(), {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      });
+
+      console.log('Login response:', response.data);
+
+      const { access_token } = response.data;
+      localStorage.setItem('access_token', access_token);
+
+      const userResponse = await api.get('/auth/me');
+      setUser(userResponse.data);
+    } catch (error: any) {
+      console.error('Login failed full error:', error.response?.data || error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const logout = () => {
+    localStorage.removeItem('access_token');
+    setUser(null);
+  };
+
+  const value: AuthContextType = {
+    user,
+    isAuthenticated: !!user,
+    login,
+    logout,
+    loading,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) throw new Error('useAuth must be used within AuthProvider');
+  return context;
+};
+
+============================================================
+FILE: frontend\src\context\WorkflowContext.tsx
+============================================================
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import api from '../services/api';
+
+type WorkflowStep = 'dashboard' | 'diagnostics' | 'compiler' | 'inference';
+
+interface WorkflowContextType {
+  selectedDevice: string | null;
+  currentStep: WorkflowStep;
+  selectDevice: (id: string) => Promise<void>;
+  unlockStep: (step: WorkflowStep) => void;
+  loading: boolean;
+}
+
+const WorkflowContext = createContext<WorkflowContextType | undefined>(undefined);
+
+export const WorkflowProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [selectedDevice, setSelectedDevice] = useState<string | null>(null);
+  const [currentStep, setCurrentStep] = useState<WorkflowStep>('dashboard');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const loadWorkflow = async () => {
+      const deviceId = localStorage.getItem('selectedDevice');
+      if (deviceId) {
+        try {
+          const res = await api.get(`/workflow/status/${deviceId}`);
+          setSelectedDevice(deviceId);
+          setCurrentStep(res.data.current_step);
+        } catch (err) {
+          localStorage.removeItem('selectedDevice');
+        }
+      }
+    };
+    loadWorkflow();
+  }, []);
+
+  const selectDevice = async (id: string) => {
+    setLoading(true);
+    await api.post(`/workflow/select-device/${id}`);
+    setSelectedDevice(id);
+    setCurrentStep('diagnostics');
+    localStorage.setItem('selectedDevice', id);
+    setLoading(false);
+  };
+
+  const unlockStep = (step: WorkflowStep) => {
+    setCurrentStep(step);
+  };
+
+  return (
+    <WorkflowContext.Provider value={{ selectedDevice, currentStep, selectDevice, unlockStep, loading }}>
+      {children}
+    </WorkflowContext.Provider>
+  );
+};
+
+export const useWorkflow = () => {
+  const context = useContext(WorkflowContext);
+  if (!context) throw new Error('useWorkflow must be used within WorkflowProvider');
+  return context;
+};
+
+============================================================
+FILE: frontend\src\pages\Compiler.tsx
+============================================================
+import React, { useState } from 'react';
+import { Card, Upload, Button, Select, Space, Tabs, message } from 'antd';
+import { UploadOutlined } from '@ant-design/icons';
+import { useWorkflow } from '../context/WorkflowContext';
+import api from '../services/api';
+import OnnxGraph from '../components/OnnxGraph';
+
+const { Dragger } = Upload;
+const { Option } = Select;
+
+const Compiler: React.FC = () => {
+  const [modelFile, setModelFile] = useState<File | null>(null);
+  const [graphPath, setGraphPath] = useState<string | null>(null);
+  const [quantType, setQuantType] = useState('int8');
+  const [quantizing, setQuantizing] = useState(false);
+  const [compiling, setCompiling] = useState(false);
+  const [quantizedPath, setQuantizedPath] = useState<string | null>(null);
+  const { selectedDevice, unlockStep } = useWorkflow();
+
+  const handleUpload = async (file: File) => {
+    setModelFile(file);
+    const url = URL.createObjectURL(file);
+    setGraphPath(url);
+  };
+
+  const handleQuantize = async () => {
+    if (!modelFile) {
+      message.error('Please upload a model first');
+      return;
+    }
+
+    setQuantizing(true);
+
+    const formData = new FormData();
+    formData.append('file', modelFile);
+    formData.append('quant_type', quantType); // ВАЖНО: правильное имя параметра
+
+    try {
+      const res = await api.post('/compiler/quantize', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      setQuantizedPath(res.data.quantized_path);
+      message.success(`Quantization complete! Size reduction: ${res.data.size_reduction}`);
+    } catch (error: any) {
+      // ВАЖНО: покажет точную ошибку в консоли
+      console.error('Quantize error details:', error.response?.data);
+      message.error(error.response?.data?.detail || 'Quantization failed');
+    } finally {
+      setQuantizing(false);
+    }
+  };
+
+  const handleCompile = async () => {
+    if (!modelFile) {
+      message.error('Please upload a model first');
+      return;
+    }
+
+    setCompiling(true);
+    try {
+      const res = await api.post('/compiler/compile', { device_id: selectedDevice });
+      message.success(`Firmware compiled: ${res.data.firmware_path}`);
+      unlockStep('inference');
+    } catch (err: any) {
+      console.error('Compile error:', err);
+      message.error('Compilation failed');
+    } finally {
+      setCompiling(false);
+    }
+  };
+
+  const items = [
+    {
+      key: 'upload',
+      label: 'Upload Model',
+      children: (
+        <Card title="Upload ONNX Model">
+          <Dragger
+            beforeUpload={file => { handleUpload(file); return false; }}
+            accept=".onnx"
+            showUploadList={false}
+          >
+            <p className="ant-upload-drag-icon">
+              <UploadOutlined style={{ fontSize: 48 }} />
+            </p>
+            <p>Click or drag ONNX file to this area</p>
+          </Dragger>
+        </Card>
+      ),
+    },
+    {
+      key: 'graph',
+      label: 'Graph View',
+      disabled: !graphPath,
+      children: graphPath && (
+        <Card title="Model Visualization">
+          <OnnxGraph modelPath={graphPath} />
+        </Card>
+      ),
+    },
+  ];
+
+  return (
+    <div>
+      <h1>Neural Network Compiler: {selectedDevice}</h1>
+      <Tabs defaultActiveKey="upload" items={items} />
+
+      <Card title="Quantization" style={{ marginTop: 24 }}>
+        <Space>
+          <Select value={quantType} onChange={setQuantType} style={{ width: 120 }}>
+            <Option value="int8">INT8</Option>
+            <Option value="uint8">UInt8</Option>
+          </Select>
+          <Button
+            onClick={handleQuantize}
+            loading={quantizing}
+            type="primary"
+            disabled={!modelFile}
+          >
+            Quantize
+          </Button>
+        </Space>
+      </Card>
+
+      <Card title="Compile Firmware" style={{ marginTop: 24 }}>
+        <Button
+          onClick={handleCompile}
+          loading={compiling}
+          type="primary"
+          block
+          disabled={!modelFile}
+        >
+          Compile for {selectedDevice}
+        </Button>
+      </Card>
+    </div>
+  );
+};
+
+export default Compiler;
+
+============================================================
+FILE: frontend\src\pages\Dashboard.tsx
+============================================================
+import React, { useEffect, useState } from 'react';
+import { Card, List, Button, Tag, Spin, Alert, Space } from 'antd';
+import { useWorkflow } from '../context/WorkflowContext';
+import api from '../services/api';
+
+const Dashboard: React.FC = () => {
+  const [devices, setDevices] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const { selectDevice, loading: workflowLoading } = useWorkflow();
+
+  useEffect(() => {
+    loadDevices();
+  }, []);
+
+  const loadDevices = async () => {
+    setLoading(true);
+    try {
+      const res = await api.get('/devices');
+      setDevices(res.data.devices);
+    } catch (err) {
+      Alert.error('Failed to load devices');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createMockDevice = async () => {
+    try {
+      await api.post('/devices/mock');
+      loadDevices();
+    } catch (err) {
+      Alert.error('Failed to create mock device');
+    }
+  };
+
+  return (
+    <div>
+      <h1>Device Selection</h1>
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Button onClick={createMockDevice} type="dashed">
+          + Create Mock Device
+        </Button>
+        <Spin spinning={loading || workflowLoading}>
+          <List
+            grid={{ gutter: 16, column: 2 }}
+            dataSource={devices}
+            renderItem={dev => (
+              <List.Item>
+                <Card
+                  title={dev.id}
+                  extra={<Tag color={dev.status === 'idle' ? 'green' : 'red'}>{dev.status}</Tag>}
+                  actions={[
+                    <Button
+                      onClick={() => selectDevice(dev.id)}
+                      type="primary"
+                      disabled={dev.status !== 'idle'}
+                    >
+                      Select Device
+                    </Button>
+                  ]}
+                >
+                  <p><strong>Version:</strong> {dev.version}</p>
+                  <p><strong>Type:</strong> {dev.is_mock ? 'Mock Device' : 'Physical Device'}</p>
+                </Card>
+              </List.Item>
+            )}
+          />
+        </Spin>
+      </Space>
+    </div>
+  );
+};
+
+export default Dashboard;
+
+============================================================
+FILE: frontend\src\pages\Diagnostics.tsx
+============================================================
+import React, { useState } from 'react';
+import { Card, Button, Progress, Alert, List, Tag, Spin, message } from 'antd';
+import { CheckCircleOutlined } from '@ant-design/icons';
+import { useWorkflow } from '../context/WorkflowContext';
+import api from '../services/api';
+
+const Diagnostics: React.FC = () => {
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const { selectedDevice, unlockStep } = useWorkflow();
+
+  const runDiagnostics = async () => {
+    setRunning(true);
+    setProgress(0);
+
+    const interval = setInterval(() => {
+      setProgress(prev => Math.min(prev + 10, 90));
+    }, 300);
+
+    try {
+      await api.post('/diagnostics', { device_id: selectedDevice });
+
+      clearInterval(interval);
+      setProgress(100);
+      unlockStep('compiler');
+      message.success('Diagnostics completed successfully!');
+    } catch (err) {
+      message.error('Diagnostics failed');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div>
+      <h1>Diagnostics: {selectedDevice}</h1>
+      <Card>
+        <Spin spinning={running}>
+          <Button
+            onClick={runDiagnostics}
+            loading={running}
+            type="primary"
+            icon={<CheckCircleOutlined />}
+          >
+            Run Full Diagnostics
+          </Button>
+          {running && <Progress percent={progress} status="active" style={{ marginTop: 16 }} />}
+        </Spin>
+      </Card>
+
+      {!running && progress === 100 && (
+        <Card title="Results" style={{ marginTop: 24 }}>
+          <Alert
+            message="Diagnostics passed"
+            type="success"
+            showIcon
+            icon={<CheckCircleOutlined />}
+          />
+          <p style={{ marginTop: 16 }}>Device {selectedDevice} is healthy and ready for compilation.</p>
+        </Card>
+      )}
+    </div>
+  );
+};
+
+export default Diagnostics;
+
+============================================================
+FILE: frontend\src\pages\Inference.tsx
+============================================================
+import React, { useState } from 'react';
+import { Card, Upload, Button, Tabs, Table, Image, Space, Alert } from 'antd';
+import { UploadOutlined, PlayCircleOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { useWorkflow } from '../context/WorkflowContext';
+import api from '../services/api';
+import OnnxGraph from '../components/OnnxGraph';
+
+const { TabPane } = Tabs;
+
+const Inference: React.FC = () => {
+  const [firmware, setFirmware] = useState<File | null>(null);
+  const [dataset, setDataset] = useState<File[]>([]);
+  const [running, setRunning] = useState(false);
+  const [results, setResults] = useState<any[]>([]);
+  const { selectedDevice } = useWorkflow();
+  const [firmwareFlashed, setFirmwareFlashed] = useState(false);
+
+  const columns = [
+    { title: 'Input', dataIndex: 'input', key: 'input' },
+    { title: 'Prediction', dataIndex: 'prediction', key: 'prediction' },
+    { title: 'Confidence', dataIndex: 'confidence', key: 'confidence', render: (v: number) => `${(v * 100).toFixed(2)}%` },
+    { title: 'Latency (ms)', dataIndex: 'latency_ms', key: 'latency_ms' },
+  ];
+
+  const flashFirmware = async () => {
+    if (!firmware) return;
+    const formData = new FormData();
+    formData.append('firmware', firmware);
+    formData.append('device_id', selectedDevice!);
+    try {
+      await api.post('/inference/flash', formData);
+      setFirmwareFlashed(true);
+      Alert.success('Firmware flashed successfully');
+    } catch (err) {
+      Alert.error('Failed to flash firmware');
+    }
+  };
+
+  const runInference = async () => {
+    setRunning(true);
+    const formData = new FormData();
+    dataset.forEach(file => formData.append('data', file));
+    formData.append('device_id', selectedDevice!);
+
+    try {
+      const res = await api.post('/inference/infer', formData);
+      setResults(res.data.results);
+    } catch (err) {
+      Alert.error('Inference failed');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div>
+      <h1>Inference on {selectedDevice}</h1>
+
+      <Tabs>
+        <TabPane tab="1. Flash Firmware" key="flash">
+          <Card>
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Upload
+                beforeUpload={file => { setFirmware(file); return false; }}
+                showUploadList={false}
+              >
+                <Button icon={<UploadOutlined />}>Select Firmware</Button>
+              </Upload>
+              <Button onClick={flashFirmware} type="primary" disabled={!firmware || firmwareFlashed}>
+                Flash Firmware
+              </Button>
+              {firmwareFlashed && (
+                <Alert message="Firmware flashed" type="success" showIcon icon={<CheckCircleOutlined />} />
+              )}
+            </Space>
+          </Card>
+        </TabPane>
+
+        <TabPane tab="2. Load Test Data" key="data" disabled={!firmwareFlashed}>
+          <Card>
+            <Upload.Dragger
+              multiple
+              beforeUpload={file => { setDataset(prev => [...prev, file]); return false; }}
+            >
+              <p>Upload test dataset (images, tensors, etc.)</p>
+            </Upload.Dragger>
+            <p>Loaded: {dataset.length} files</p>
+          </Card>
+        </TabPane>
+
+        <TabPane tab="3. Run Inference" key="run" disabled={dataset.length === 0}>
+          <Button
+            onClick={runInference}
+            loading={running}
+            type="primary"
+            icon={<PlayCircleOutlined />}
+            size="large"
+            block
+          >
+            Start Inference
+          </Button>
+        </TabPane>
+      </Tabs>
+
+      {results.length > 0 && (
+        <Card title="Inference Results" style={{ marginTop: 24 }}>
+          <Table dataSource={results} columns={columns} rowKey="input" />
+        </Card>
+      )}
+    </div>
+  );
+};
+
+export default Inference;
+
+============================================================
+FILE: frontend\src\pages\Login.tsx
+============================================================
+import React, { useState } from 'react';
+import { Card, Form, Input, Button, Alert, Spin } from 'antd';
+import { useAuth } from '../context/AuthContext';
+import { useNavigate } from 'react-router-dom';
+
+const Login: React.FC = () => {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { login } = useAuth();
+  const navigate = useNavigate();
+
+  const onFinish = async (values: any) => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      await login(values.username, values.password);
+      navigate('/'); // Переход на Dashboard после успешного входа
+    } catch (err) {
+      setError('Invalid username or password');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      height: '100vh',
+      background: '#f0f2f5'
+    }}>
+      <Card title="NSoft AI Compiler Login" style={{ width: 400 }}>
+        <Form
+          name="login"
+          onFinish={onFinish}
+          layout="vertical"
+        >
+          <Form.Item
+            name="username"
+            label="Username"
+            rules={[{ required: true, message: 'Please input your username!' }]}
+          >
+            <Input placeholder="admin" />
+          </Form.Item>
+
+          <Form.Item
+            name="password"
+            label="Password"
+            rules={[{ required: true, message: 'Please input your password!' }]}
+          >
+            <Input.Password placeholder="secret" />
+          </Form.Item>
+
+          {error && (
+            <Alert message={error} type="error" showIcon style={{ marginBottom: 16 }} />
+          )}
+
+          <Form.Item>
+            <Button type="primary" htmlType="submit" loading={loading} block>
+              Log In
+            </Button>
+          </Form.Item>
+        </Form>
+
+        <div style={{ marginTop: 16, textAlign: 'center', color: '#666' }}>
+          <small>Default: admin / secret</small>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+export default Login;
+
+============================================================
+FILE: frontend\src\services\api.ts
+============================================================
+import axios from 'axios';
+
+const api = axios.create({
+  baseURL: 'http://localhost:8000/api',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('access_token');
+  console.log('🔑 Token sent:', token?.substring(0, 20) + '...'); // Лог токена
+  if (token && config.headers) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+export default api;
+

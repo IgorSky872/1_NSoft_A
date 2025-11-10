@@ -40,3 +40,16 @@ async def create_mock_device(db: Session = Depends(get_db), user=Depends(get_cur
     db.add(mock_device)
     db.commit()
     return {"device": {"id": mock_device.id, "status": mock_device.status}}
+
+@router.get("/devices/{device_id}")
+async def get_device(device_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if not device:
+        raise HTTPException(404, "Device not found")
+    return {
+        "id": device.id,
+        "status": device.status,
+        "version": device.version,
+        "is_mock": device.is_mock,
+        "diagnostics": device.diagnostics
+    }

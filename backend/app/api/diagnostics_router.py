@@ -4,9 +4,14 @@ import asyncio
 from app.models.device_models import Device
 from app.models.workflow_models import DeviceWorkflowStatus, WorkflowStep
 from app.database import get_db
-from app.auth.dependencies import get_current_user  # ИЗМЕНЕНО
+from app.auth.dependencies import get_current_user
+from pydantic import BaseModel
 
 router = APIRouter()
+
+
+class DiagnosticsRequest(BaseModel):
+    device_id: str
 
 
 async def run_diagnostics_task(device_id: str, db: Session):
@@ -25,11 +30,15 @@ async def run_diagnostics_task(device_id: str, db: Session):
 
 
 @router.post("/diagnostics")
-async def run_diagnostics(device_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db),
-                          user=Depends(get_current_user)):
-    device = db.query(Device).filter(Device.id == device_id).first()
+async def run_diagnostics(
+        request: DiagnosticsRequest,  # Используем Pydantic модель
+        background_tasks: BackgroundTasks,
+        db: Session = Depends(get_db),
+        user=Depends(get_current_user)
+):
+    device = db.query(Device).filter(Device.id == request.device_id).first()
     if not device:
         raise HTTPException(404, "Device not found")
 
-    background_tasks.add_task(run_diagnostics_task, device_id, db)
+    background_tasks.add_task(run_diagnostics_task, request.device_id, db)
     return {"status": "started", "message": "Diagnostics running in background"}
