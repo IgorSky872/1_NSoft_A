@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { WorkflowProvider } from './context/WorkflowContext';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import Diagnostics from './pages/Diagnostics';
 import Compiler from './pages/Compiler';
 import Inference from './pages/Inference';
 import Sidebar from './components/Sidebar';

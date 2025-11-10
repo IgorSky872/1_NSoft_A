@@ -39,17 +39,17 @@ const Diagnostics: React.FC = () => {
     <div>
       <h1>Diagnostics: {selectedDevice}</h1>
       <Card>
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <Spin spinning={running}>
           <Button
             onClick={runDiagnostics}
-            loading={running}
             type="primary"
             icon={<CheckCircleOutlined />}
+            disabled={running}
           >
             Run Full Diagnostics
           </Button>
-          {running && <Progress percent={progress} status="active" />}
-        </Space>
+          {running && <Progress percent={progress} status="active" style={{ marginTop: 16 }} />}
+        </Spin>
       </Card>
 
       {results && (
