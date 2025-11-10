@@ -1,47 +1,72 @@
 import React, { useEffect, useState } from 'react';
+import { Card, List, Button, Tag, Spin, Alert, Space } from 'antd';
+import { useWorkflow } from '../context/WorkflowContext';
 import api from '../services/api';
 
-interface Device {
-  id: string;
-  status: string;
-  version: string;
-}
-
 const Dashboard: React.FC = () => {
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [devices, setDevices] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const { selectDevice, loading: workflowLoading } = useWorkflow();
 
   useEffect(() => {
-    api.get('/devices')
-      .then(res => {
-        setDevices(res.data.devices);
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error(err);
-        setLoading(false);
-      });
+    loadDevices();
   }, []);
 
-  return (
-    <div style={{ marginLeft: 250, padding: 20 }}>
-      <h1>Welcome to Neuro App!</h1>
-      <p>Select a mode from the sidebar.</p>
+  const loadDevices = async () => {
+    setLoading(true);
+    try {
+      const res = await api.get('/devices');
+      setDevices(res.data.devices);
+    } catch (err) {
+      Alert.error('Failed to load devices');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      <div style={{ marginTop: 30, padding: 20, background: '#f8f9fa', borderRadius: 8 }}>
-        <h2>Connected Devices</h2>
-        {loading ? <p>Loading...</p> : devices.length > 0 ? (
-          <ul>
-            {devices.map(dev => (
-              <li key={dev.id}>
-                <strong>{dev.id}</strong>: {dev.status} (v{dev.version})
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p>No devices found (stub mode).</p>
-        )}
-      </div>
+  const createMockDevice = async () => {
+    try {
+      await api.post('/devices/mock');
+      loadDevices();
+    } catch (err) {
+      Alert.error('Failed to create mock device');
+    }
+  };
+
+  return (
+    <div>
+      <h1>Device Selection</h1>
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Button onClick={createMockDevice} type="dashed">
+          + Create Mock Device
+        </Button>
+        <Spin spinning={loading || workflowLoading}>
+          <List
+            grid={{ gutter: 16, column: 2 }}
+            dataSource={devices}
+            renderItem={dev => (
+              <List.Item>
+                <Card
+                  title={dev.id}
+                  extra={<Tag color={dev.status === 'idle' ? 'green' : 'red'}>{dev.status}</Tag>}
+                  actions={[
+                    <Button
+                      onClick={() => selectDevice(dev.id)}
+                      type="primary"
+                      disabled={dev.status !== 'idle'}
+                    >
+                      Select Device
+                    </Button>
+                  ]}
+                >
+                  <p><strong>Version:</strong> {dev.version}</p>
+                  <p><strong>Type:</strong> {dev.is_mock ? 'Mock Device' : 'Physical Device'}</p>
+                </Card>
+              </List.Item>
+            )}
+          />
+        </Spin>
+      </Space>
     </div>
   );
 };
