@@ -11,7 +11,7 @@ const LoginForm: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
     e.preventDefault();
     setError('');
     try {
-      const res = await axios.post('/api/login', new URLSearchParams({ username, password }), {
+      const res = await api.post('/api/login', new URLSearchParams({ username, password }), {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
       });
       localStorage.setItem('token', res.data.access_token);
