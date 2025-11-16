@@ -8,7 +8,7 @@ from app.models.workflow_models import DeviceWorkflowStatus, WorkflowStep
 from app.database import get_db
 from app.auth.dependencies import get_current_user  # ИЗМЕНЕНО
 
-router = APIRouter()
+router = APIRouter(tags=["compiler"])
 
 # Создаем путь к tmp внутри проекта (на уровне app/)
 PROJECT_TMP_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'tmp')
