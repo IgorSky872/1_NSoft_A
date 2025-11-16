@@ -15,7 +15,7 @@ interface OnnxNode {
 }
 
 interface OnnxEdge {
-  from_: string;
+  from: string;
   to: string;
   label: string;
 }
@@ -65,7 +65,7 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
 
           const edges = onnxData.edges.map((edge: OnnxEdge) => ({
             data: {
-              source: edge.from_,
+              source: edge.from,
               target: edge.to,
               label: edge.label,
             },
