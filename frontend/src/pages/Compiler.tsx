@@ -11,16 +11,36 @@ const { Option } = Select;
 const Compiler: React.FC = () => {
   const [modelFile, setModelFile] = useState<File | null>(null);
   const [graphPath, setGraphPath] = useState<string | null>(null);
+  const [onnxData, setOnnxData] = useState<any>(null); // ← Добавили state
   const [quantType, setQuantType] = useState('int8');
   const [quantizing, setQuantizing] = useState(false);
   const [compiling, setCompiling] = useState(false);
   const [quantizedPath, setQuantizedPath] = useState<string | null>(null);
   const { selectedDevice, unlockStep } = useWorkflow();
 
+  // ✅ НОВАЯ ФУНКЦИЯ: Парсим ONNX через API
+  const parseOnnxModel = async (file: File) => {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await api.post('/parse-onnx', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+
+      setOnnxData(response.data);
+      message.success('Model parsed successfully');
+    } catch (error) {
+      console.error('Error parsing ONNX:', error);
+      message.error('Failed to parse ONNX model');
+    }
+  };
+
   const handleUpload = async (file: File) => {
     setModelFile(file);
     const url = URL.createObjectURL(file);
     setGraphPath(url);
+    await parseOnnxModel(file); // ← Парсим после загрузки
   };
 
   const handleQuantize = async () => {
@@ -33,19 +53,16 @@ const Compiler: React.FC = () => {
 
     const formData = new FormData();
     formData.append('file', modelFile);
-    formData.append('quant_type', quantType); // ВАЖНО: правильное имя параметра
+    formData.append('quant_type', quantType);
 
     try {
       const res = await api.post('/compiler/quantize', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
+        headers: { 'Content-Type': 'multipart/form-data' },
       });
 
       setQuantizedPath(res.data.quantized_path);
       message.success(`Quantization complete! Size reduction: ${res.data.size_reduction}`);
     } catch (error: any) {
-      // ВАЖНО: покажет точную ошибку в консоли
       console.error('Quantize error details:', error.response?.data);
       message.error(error.response?.data?.detail || 'Quantization failed');
     } finally {
@@ -97,7 +114,7 @@ const Compiler: React.FC = () => {
       disabled: !graphPath,
       children: graphPath && (
         <Card title="Model Visualization">
-          <OnnxGraph modelPath={graphPath} />
+          <OnnxGraph modelPath={graphPath} onnxData={onnxData} /> {/* ← Передаем данные */}
         </Card>
       ),
     },

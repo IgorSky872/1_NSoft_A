@@ -1,18 +1,42 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Cytoscape from 'cytoscape';
+import dagre from 'cytoscape-dagre';
 import { Card, Tabs } from 'antd';
+
+// Регистрируем dagre layout
+Cytoscape.use(dagre);
+
+interface OnnxNode {
+  name: string;
+  op_type: string;
+  inputs: string[];
+  outputs: string[];
+  attributes: Record<string, any>;
+}
+
+interface OnnxEdge {
+  from_: string;
+  to: string;
+  label: string;
+}
+
+interface OnnxData {
+  nodes: OnnxNode[];
+  edges: OnnxEdge[];
+}
 
 interface OnnxGraphProps {
   modelPath?: string;
+  onnxData?: OnnxData | null;
 }
 
-const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath }) => {
+const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
   const [activeTab, setActiveTab] = useState('graph');
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Cytoscape.Core | null>(null);
 
   useEffect(() => {
-    if (!modelPath || !containerRef.current) return;
+    if (!containerRef.current) return;
 
     // Очистка предыдущего графа
     if (cyRef.current) {
@@ -22,20 +46,44 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath }) => {
 
     const parseAndRender = async () => {
       try {
-        // Моковые данные для визуализации
-        const elements = {
-          nodes: [
-            { data: { id: 'input', label: 'Input' } },
-            { data: { id: 'conv1', label: 'Conv1' } },
-            { data: { id: 'relu1', label: 'ReLU1' } },
-            { data: { id: 'output', label: 'Output' } },
-          ],
-          edges: [
-            { data: { source: 'input', target: 'conv1' } },
-            { data: { source: 'conv1', target: 'relu1' } },
-            { data: { source: 'relu1', target: 'output' } },
-          ],
-        };
+        let elements: any;
+
+        // ✅ ИСПРАВЛЕНО: Используем реальные данные если они есть
+        if (onnxData?.nodes && onnxData.nodes.length > 0) {
+          console.log('Rendering real ONNX data:', onnxData);
+
+          const nodes = onnxData.nodes.map((node: OnnxNode) => ({
+            data: {
+              id: node.name,
+              label: node.name,
+              op_type: node.op_type,
+              inputs: node.inputs,
+              outputs: node.outputs,
+              attributes: node.attributes,
+            },
+          }));
+
+          const edges = onnxData.edges.map((edge: OnnxEdge) => ({
+            data: {
+              source: edge.from_,
+              target: edge.to,
+              label: edge.label,
+            },
+          }));
+
+          elements = { nodes, edges };
+        }
+        // Показываем плейсхолдер если файл загружен но данных еще нет
+        else if (modelPath) {
+          elements = {
+            nodes: [
+              { data: { id: 'loading', label: 'Loading graph...' } },
+            ],
+            edges: [],
+          };
+        } else {
+          return; // Ничего не делаем
+        }
 
         const cy = Cytoscape({
           container: containerRef.current,
@@ -52,6 +100,7 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath }) => {
                 'text-outline-color': '#1890ff',
                 'height': 50,
                 'width': 120,
+                'font-size': '10px',
               },
             },
             {
@@ -61,12 +110,16 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath }) => {
                 'source-arrow-shape': 'triangle',
                 'line-color': '#ddd',
                 'target-arrow-color': '#ddd',
+                'label': 'data(label)',
+                'font-size': '8px',
+                'color': '#666',
               },
             },
           ],
           layout: {
-            name: 'grid',
-            rows: 1,
+            name: 'dagre',
+            rankDir: 'LR',
+            padding: 20,
           },
         });
 
@@ -84,7 +137,7 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath }) => {
         cyRef.current = null;
       }
     };
-  }, [modelPath]);
+  }, [modelPath, onnxData]); // Перерендер при изменении данных
 
   const items = [
     {
@@ -104,7 +157,7 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath }) => {
     },
   ];
 
-  if (!modelPath) {
+  if (!modelPath && !onnxData) {
     return <div style={{ padding: 20, textAlign: 'center' }}>Upload an ONNX file to visualize the graph</div>;
   }
 
