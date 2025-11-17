@@ -63,8 +63,15 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
           return;
         }
 
+        // ВАЖНО: Фиксируем размеры контейнера
+        const container = containerRef.current!;
+        container.style.width = '100%';
+        container.style.height = '600px';
+        container.style.minWidth = '0';
+        container.style.overflow = 'hidden';
+
         const cy = Cytoscape({
-          container: containerRef.current,
+          container: container,
           elements: { nodes, edges },
           style: [
             {
@@ -112,9 +119,14 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
             padding: 20,
             nodeSep: 50,
             rankSep: 100,
+            fit: true, // Граф будет подогнан под контейнер
+            spacingFactor: 1,
           },
           minZoom: 0.5,
           maxZoom: 2,
+          // Параметры для предотвращения скачков
+          boxSelectionEnabled: false,
+          autounselectify: true,
         });
 
         // Обработчик клика по узлу
@@ -124,6 +136,11 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
             id: node.id(),
             data: node.data()
           });
+        });
+
+        // Фиксируем размер после готовности графа
+        cy.ready(() => {
+          container.style.overflow = 'hidden';
         });
 
         cyRef.current = cy;
@@ -173,6 +190,10 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
             border: '1px solid #d9d9d9',
             borderRadius: '8px',
             background: '#fafafa',
+            // Предотвращаем расширение контейнера
+            overflow: 'hidden !important',
+            flexShrink: 0,
+            minWidth: 0,
           }}
         />
       ),

@@ -4,7 +4,7 @@ import { UploadOutlined } from '@ant-design/icons';
 import { useWorkflow } from '../context/WorkflowContext';
 import api from '../services/api';
 import OnnxGraph from '../components/OnnxGraph';
-import type { OnnxData } from '../types';  // ← Импорт правильного типа
+import type { OnnxData } from '../types';
 
 const { Dragger } = Upload;
 const { Option } = Select;
@@ -12,15 +12,15 @@ const { Option } = Select;
 const Compiler: React.FC = () => {
   const [modelFile, setModelFile] = useState<File | null>(null);
   const [graphPath, setGraphPath] = useState<string | null>(null);
-  const [onnxData, setOnnxData] = useState<OnnxData | null>(null);  // ← ТИПИЗИРОВАННЫЙ STATE
+  const [onnxData, setOnnxData] = useState<OnnxData | null>(null);
   const [quantType, setQuantType] = useState('int8');
   const [quantizing, setQuantizing] = useState(false);
   const [compiling, setCompiling] = useState(false);
   const [quantizedPath, setQuantizedPath] = useState<string | null>(null);
-  const [parsing, setParsing] = useState(false);  // ← НОВЫЙ STATE для индикатора
+  const [parsing, setParsing] = useState(false);
   const { selectedDevice, unlockStep } = useWorkflow();
 
-  // ✅ УЛУЧШЕННАЯ ФУНКЦИЯ С ВАЛИДАЦИЕЙ и ДЕТАЛЬНОЙ ОБРАБОТКОЙ ОШИБОК
+  // Функция парсинга ONNX модели с валидацией
   const parseOnnxModel = async (file: File) => {
     setParsing(true);
     try {
@@ -31,7 +31,7 @@ const Compiler: React.FC = () => {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
 
-      // === ВАЛИДАЦИЯ ОТВЕТА ===
+      // Валидация ответа
       if (!response.data) {
         throw new Error('Empty response from server');
       }
@@ -50,7 +50,7 @@ const Compiler: React.FC = () => {
     } catch (error: any) {
       console.error('Error parsing ONNX:', error);
 
-      // === ДЕТАЛЬНАЯ ОБРАБОТКА ОШИБОК ===
+      // Детальная обработка ошибок
       let errorMessage = 'Failed to parse ONNX model';
 
       if (error.response?.status === 400) {
@@ -58,14 +58,14 @@ const Compiler: React.FC = () => {
       } else if (error.response?.status === 413) {
         errorMessage = 'Model file too large (>10MB)';
       } else if (error.message?.includes('nodes')) {
-        errorMessage = error.message; // Наша кастомная ошибка валидации
+        errorMessage = error.message;
       } else if (!error.response) {
         errorMessage = 'Network error: Cannot connect to server';
       }
 
       message.error(errorMessage);
 
-      // === ОЧИСТКА СОСТОЯНИЯ ПРИ ОШИБКЕ ===
+      // Очистка состояния при ошибке
       setOnnxData(null);
       setGraphPath(null);
 
@@ -151,7 +151,10 @@ const Compiler: React.FC = () => {
       label: 'Graph View',
       disabled: !graphPath || parsing,
       children: graphPath && (
-        <Card title="Model Visualization">
+        <Card
+          title="Model Visualization"
+          style={{ width: '100%', overflow: 'hidden' }} // Предотвращаем расширение
+        >
           <OnnxGraph modelPath={graphPath} onnxData={onnxData} />
         </Card>
       ),

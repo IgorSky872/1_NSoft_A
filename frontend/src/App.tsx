@@ -48,7 +48,13 @@ const PublicLayout: React.FC = () => {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      //background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      //background: 'linear-gradient(135deg, #1e3c72 0%, #2a5298 100%)', //Hi-Tech
+      //background: 'linear-gradient(135deg, #e0eafc 0%, #cfdef3 100%)', //Minimalism
+      //background: 'linear-gradient(135deg, #232526 0%, #414345 100%)', // Night
+      //background: 'linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%)', //Blue
+      //background: 'linear-gradient(135deg, #001529 0%, #f0f2f5 50%, #cfdef3 100%)', //My 1
+      background: 'linear-gradient(135deg, #001529 0%, #f0f2f5 100%)', //My 2
       zIndex: 9999,
       margin: 0,
       padding: 0,
