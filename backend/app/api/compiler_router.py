@@ -52,6 +52,9 @@ async def quantize_model(
         # Очистка: удаляем оригинальный файл после квантизации
         if os.path.exists(original_path):
             os.remove(original_path)
+        # Очистка: удаляем квантизованный файлы после квантизации
+        #if os.path.exists(quantized_path):
+        #    os.remove(quantized_path)
 
 @router.post("/compile")
 async def compile_firmware(device_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
