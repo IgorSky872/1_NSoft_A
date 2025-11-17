@@ -4178,8 +4178,10 @@ FILE: frontend\src\App.css
   margin-left: 250px;
   padding: 24px;
   overflow-y: auto;
+  overflow-x: hidden; /* Запретить горизонтальный скролл */
   background: #f0f2f5;
   transition: margin-left 0.3s;
+  min-width: 0; /* Важно для flex-элементов! */
 }
 
 /* Стили Sidebar */
@@ -4308,9 +4310,15 @@ FILE: frontend\src\App.css
   }
 }
 
+.ant-tabs-content-holder {
+  overflow: hidden;
+  max-width: 100%;
+}
+
 ============================================================
 FILE: frontend\src\App.tsx
 ============================================================
+// frontend/src/App.tsx
 import React from 'react';
 import { createBrowserRouter, RouterProvider, Navigate, Outlet } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -4335,7 +4343,7 @@ const Layout: React.FC = () => {
     <div className="app">
       <Sidebar isOpen={true} />
       <div className="main-content">
-        <Outlet /> {/* Здесь рендерятся вложенные маршруты */}
+        <Outlet />
       </div>
     </div>
   );
@@ -4345,15 +4353,38 @@ const Layout: React.FC = () => {
 const PublicLayout: React.FC = () => {
   const { isAuthenticated } = useAuth();
 
-  // Если уже авторизован, перенаправляем на дашборд
   if (isAuthenticated) {
     return <Navigate to="/" replace />;
   }
 
-  return <Outlet />;
+  // ✅ ГРАДИЕНТ ТОЛЬКО ЗДЕСЬ, в одном месте
+  return (
+    <div style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      width: '100vw',
+      height: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      //background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      //background: 'linear-gradient(135deg, #1e3c72 0%, #2a5298 100%)', //Hi-Tech
+      //background: 'linear-gradient(135deg, #e0eafc 0%, #cfdef3 100%)', //Minimalism
+      //background: 'linear-gradient(135deg, #232526 0%, #414345 100%)', // Night
+      //background: 'linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%)', //Blue
+      //background: 'linear-gradient(135deg, #001529 0%, #f0f2f5 50%, #cfdef3 100%)', //My 1
+      background: 'linear-gradient(135deg, #001529 0%, #f0f2f5 100%)', //My 2
+      zIndex: 9999,
+      margin: 0,
+      padding: 0,
+    }}>
+      <Outlet />
+    </div>
+  );
 };
 
-// Конфигурация маршрутов с future flags
+// Конфигурация маршрутов
 const router = createBrowserRouter([
   {
     element: <PublicLayout />,
@@ -4460,6 +4491,10 @@ button:focus-visible {
   button {
     background-color: #f9f9f9;
   }
+}
+
+body {
+  overflow-x: hidden; /* Полный запрет горизонтальной прокрутки */
 }
 
 
@@ -4586,8 +4621,15 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
           return;
         }
 
+        // ВАЖНО: Фиксируем размеры контейнера
+        const container = containerRef.current!;
+        container.style.width = '100%';
+        container.style.height = '600px';
+        container.style.minWidth = '0';
+        container.style.overflow = 'hidden';
+
         const cy = Cytoscape({
-          container: containerRef.current,
+          container: container,
           elements: { nodes, edges },
           style: [
             {
@@ -4635,9 +4677,14 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
             padding: 20,
             nodeSep: 50,
             rankSep: 100,
+            fit: true, // Граф будет подогнан под контейнер
+            spacingFactor: 0.8,
           },
           minZoom: 0.5,
           maxZoom: 2,
+          // Параметры для предотвращения скачков
+          boxSelectionEnabled: false,
+          autounselectify: true,
         });
 
         // Обработчик клика по узлу
@@ -4647,6 +4694,11 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
             id: node.id(),
             data: node.data()
           });
+        });
+
+        // Фиксируем размер после готовности графа
+        cy.ready(() => {
+          container.style.overflow = 'hidden';
         });
 
         cyRef.current = cy;
@@ -4692,17 +4744,31 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
           ref={containerRef}
           style={{
             width: '100%',
+            maxWidth: '100%', // ← Добавьте это
             height: '600px',
             border: '1px solid #d9d9d9',
             borderRadius: '8px',
             background: '#fafafa',
+            // Предотвращаем расширение контейнера
+            overflow: 'hidden !important',
+            flexShrink: 0,
+            minWidth: 0,
           }}
         />
       ),
     },
   ];
 
-  return <Tabs activeKey={activeTab} onChange={setActiveTab} items={items} />;
+  //return <Tabs activeKey={activeTab} onChange={setActiveTab} items={items} />;
+  return (
+  <div style={{ maxWidth: '100%', overflow: 'hidden' }}>
+    <Tabs
+      activeKey={activeTab}
+      onChange={setActiveTab}
+      items={items}
+    />
+  </div>
+);
 };
 
 export default OnnxGraph;
@@ -5247,7 +5313,7 @@ import { UploadOutlined } from '@ant-design/icons';
 import { useWorkflow } from '../context/WorkflowContext';
 import api from '../services/api';
 import OnnxGraph from '../components/OnnxGraph';
-import type { OnnxData } from '../types';  // ← Импорт правильного типа
+import type { OnnxData } from '../types';
 
 const { Dragger } = Upload;
 const { Option } = Select;
@@ -5255,15 +5321,15 @@ const { Option } = Select;
 const Compiler: React.FC = () => {
   const [modelFile, setModelFile] = useState<File | null>(null);
   const [graphPath, setGraphPath] = useState<string | null>(null);
-  const [onnxData, setOnnxData] = useState<OnnxData | null>(null);  // ← ТИПИЗИРОВАННЫЙ STATE
+  const [onnxData, setOnnxData] = useState<OnnxData | null>(null);
   const [quantType, setQuantType] = useState('int8');
   const [quantizing, setQuantizing] = useState(false);
   const [compiling, setCompiling] = useState(false);
   const [quantizedPath, setQuantizedPath] = useState<string | null>(null);
-  const [parsing, setParsing] = useState(false);  // ← НОВЫЙ STATE для индикатора
+  const [parsing, setParsing] = useState(false);
   const { selectedDevice, unlockStep } = useWorkflow();
 
-  // ✅ УЛУЧШЕННАЯ ФУНКЦИЯ С ВАЛИДАЦИЕЙ и ДЕТАЛЬНОЙ ОБРАБОТКОЙ ОШИБОК
+  // Функция парсинга ONNX модели с валидацией
   const parseOnnxModel = async (file: File) => {
     setParsing(true);
     try {
@@ -5274,7 +5340,7 @@ const Compiler: React.FC = () => {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
 
-      // === ВАЛИДАЦИЯ ОТВЕТА ===
+      // Валидация ответа
       if (!response.data) {
         throw new Error('Empty response from server');
       }
@@ -5293,7 +5359,7 @@ const Compiler: React.FC = () => {
     } catch (error: any) {
       console.error('Error parsing ONNX:', error);
 
-      // === ДЕТАЛЬНАЯ ОБРАБОТКА ОШИБОК ===
+      // Детальная обработка ошибок
       let errorMessage = 'Failed to parse ONNX model';
 
       if (error.response?.status === 400) {
@@ -5301,14 +5367,14 @@ const Compiler: React.FC = () => {
       } else if (error.response?.status === 413) {
         errorMessage = 'Model file too large (>10MB)';
       } else if (error.message?.includes('nodes')) {
-        errorMessage = error.message; // Наша кастомная ошибка валидации
+        errorMessage = error.message;
       } else if (!error.response) {
         errorMessage = 'Network error: Cannot connect to server';
       }
 
       message.error(errorMessage);
 
-      // === ОЧИСТКА СОСТОЯНИЯ ПРИ ОШИБКЕ ===
+      // Очистка состояния при ошибке
       setOnnxData(null);
       setGraphPath(null);
 
@@ -5394,7 +5460,11 @@ const Compiler: React.FC = () => {
       label: 'Graph View',
       disabled: !graphPath || parsing,
       children: graphPath && (
-        <Card title="Model Visualization">
+        <Card
+          title="Model Visualization"
+          style={{ width: '100%' }}
+          bodyStyle={{ overflow: 'hidden', maxWidth: '100%' }} // ← Добавьте bodyStyle
+        >
           <OnnxGraph modelPath={graphPath} onnxData={onnxData} />
         </Card>
       ),
@@ -5404,7 +5474,7 @@ const Compiler: React.FC = () => {
   return (
     <div>
       <h1>Neural Network Compiler: {selectedDevice}</h1>
-      <Tabs defaultActiveKey="upload" items={items} />
+      <Tabs defaultActiveKey="upload" items={items} destroyInactiveTabPane={true} />
 
       <Card title="Quantization" style={{ marginTop: 24 }}>
         <Space>
@@ -5731,7 +5801,7 @@ const Login: React.FC = () => {
 
     try {
       await login(values.username, values.password);
-      navigate('/', { replace: true }); // replace: true - чтобы нельзя было вернуться назад
+      navigate('/', { replace: true });
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Invalid credentials or server error');
     } finally {
@@ -5739,97 +5809,90 @@ const Login: React.FC = () => {
     }
   };
 
+  // ✅ УБРАЛИ ВНЕШНИЙ DIV С ГРАДИЕНТОМ - он теперь только в PublicLayout
   return (
-    <div style={{
-      display: 'flex',
-      justifyContent: 'center',
-      alignItems: 'center',
-      minHeight: '100vh',
-      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-      padding: 24,
-    }}>
-      <Card
-        style={{
-          width: '100%',
-          maxWidth: 420,
-          boxShadow: '0 10px 40px rgba(0, 0, 0, 0.2)',
-          borderRadius: 12,
-        }}
-        headStyle={{
-          textAlign: 'center',
-          borderBottom: 'none',
-          paddingTop: 32,
-        }}
-      >
-        <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <Title level={3} style={{ margin: 0, color: '#1890ff' }}>
-            NSoft AI Compiler
-          </Title>
-          <p style={{ color: '#666', marginTop: 8 }}>Sign in to continue</p>
-        </div>
+    <Card
+      style={{
+        width: '100%',
+        maxWidth: 420,
+        boxShadow: '0 10px 40px rgba(0, 0, 0, 0.2)',
+        borderRadius: 12,
+        backgroundColor: 'white', // Явно белый фон карточки
+      }}
+      headStyle={{
+        textAlign: 'center',
+        borderBottom: 'none',
+        paddingTop: 32,
+      }}
+    >
+      <div style={{ textAlign: 'center', marginBottom: 24 }}>
+        <Title level={3} style={{ margin: 0, color: '#1890ff' }}>
+          NSoft AI Compiler
+        </Title>
+        <p style={{ color: '#666', marginTop: 8 }}>Sign in to continue</p>
+      </div>
 
-        {error && (
-          <Alert
-            message={error}
-            type="error"
-            showIcon
-            style={{ marginBottom: 24 }}
-            closable
-            onClose={() => setError(null)}
-          />
-        )}
+      {error && (
+        <Alert
+          message={error}
+          type="error"
+          showIcon
+          style={{ marginBottom: 24 }}
+          closable
+          onClose={() => setError(null)}
+        />
+      )}
 
-        <Spin spinning={loading}>
-          <Form
-            name="login"
-            onFinish={onFinish}
-            layout="vertical"
-            size="large"
-            initialValues={{ username: 'admin' }}
+      <Spin spinning={loading}>
+        <Form
+          name="login"
+          onFinish={onFinish}
+          layout="vertical"
+          size="large"
+          initialValues={{ username: 'admin' }}
+        >
+          <Form.Item
+            name="username"
+            rules={[
+              { required: true, message: 'Please input your username!' },
+              { min: 3, message: 'Username must be at least 3 characters' }
+            ]}
           >
-            <Form.Item
-              name="username"
-              rules={[
-                { required: true, message: 'Please input your username!' },
-                { min: 3, message: 'Username must be at least 3 characters' }
-              ]}
-            >
-              <Input
-                prefix={<UserOutlined style={{ color: '#ccc' }} />}
-                placeholder="Username"
-                autoComplete="username"
-              />
-            </Form.Item>
+            <Input
+              prefix={<UserOutlined style={{ color: '#ccc' }} />}
+              placeholder="Username"
+              autoComplete="username"
+            />
+          </Form.Item>
 
-            <Form.Item
-              name="password"
-              rules={[
-                { required: true, message: 'Please input your password!' },
-                { min: 5, message: 'Password must be at least 5 characters' }
-              ]}
-            >
-              <Input.Password
-                prefix={<LockOutlined style={{ color: '#ccc' }} />}
-                placeholder="Password"
-                autoComplete="current-password"
-              />
-            </Form.Item>
+          <Form.Item
+            name="password"
+            rules={[
+              { required: true, message: 'Please input your password!' },
+              { min: 5, message: 'Password must be at least 5 characters' }
+            ]}
+          >
+            <Input.Password
+              prefix={<LockOutlined style={{ color: '#ccc' }} />}
+              placeholder="Password"
+              autoComplete="current-password"
+            />
+          </Form.Item>
 
-            <Form.Item style={{ marginBottom: 16 }}>
-              <Button type="primary" htmlType="submit" block>
-                Log In
-              </Button>
-            </Form.Item>
-          </Form>
-        </Spin>
+          <Form.Item style={{ marginBottom: 16 }}>
+            <Button type="primary" htmlType="submit" block>
+              Log In
+            </Button>
+          </Form.Item>
+        </Form>
+      </Spin>
 
-        <div style={{ textAlign: 'center', marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
-          <small style={{ color: '#999' }}>
-            Default: <strong>admin</strong> / <strong>secret</strong>
-          </small>
-        </div>
-      </Card>
-    </div>
+      <div style={{ textAlign: 'center', marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
+        <small style={{ color: '#999' }}>
+          Default: <strong>admin</strong> / <strong>secret</strong>
+        </small>
+      </div>
+    </Card>
   );
 };
 

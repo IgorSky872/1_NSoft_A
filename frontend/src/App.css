@@ -138,3 +138,162 @@
     padding: 16px;
   }
 }
+/* Критичные стили для предотвращения расширения страницы при загрузке графа ONNX */
+
+/* Основной контейнер страницы Compiler */
+.compiler-container {
+  max-width: 100vw !important;
+  overflow-x: hidden !important;
+  position: relative;
+}
+
+/* Контейнер вкладок */
+.compiler-tabs {
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+/* Контейнер графика ONNX */
+.onnx-graph-container {
+  max-width: 100% !important;
+  overflow: hidden !important;
+  position: relative;
+  width: 100%;
+}
+
+/* Контейнер Cytoscape */
+.cytoscape-container {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 600px !important;
+  overflow: hidden !important;
+  position: relative;
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  background: #fafafa;
+  min-width: 0 !important;
+}
+
+/* Карточка Ant Design с графиком */
+.graph-card {
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+.graph-card .ant-card-body {
+  max-width: 100% !important;
+  overflow: hidden !important;
+  padding: 16px !important;
+  position: relative;
+}
+
+/* Тело вкладки */
+.ant-tabs-tabpane {
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+/* Контент вкладки */
+.ant-tabs-content {
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+/* Контейнер вкладок */
+.ant-tabs-nav {
+  max-width: 100% !important;
+}
+
+/* Заголовок страницы */
+.compiler-title {
+  max-width: 100%;
+  word-wrap: break-word;
+}
+
+/* Медиа-запросы для адаптивности */
+@media (max-width: 768px) {
+  .cytoscape-container {
+    height: 400px !important;
+  }
+
+  .ant-card-body {
+    padding: 12px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .cytoscape-container {
+    height: 300px !important;
+  }
+}
+
+/* Принудительное скрытие полос прокрутки */
+.compiler-container::-webkit-scrollbar {
+  display: none;
+}
+
+.compiler-container {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Стили для предотвращения масштабирования */
+.cytoscape-container canvas {
+  max-width: 100% !important;
+  max-height: 100% !important;
+}
+
+/* Контейнер для кнопок и элементов управления */
+.compiler-controls {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+/* Пространство внутри карточек */
+.ant-card .ant-space {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+/* Селекты и кнопки */
+.ant-select,
+.ant-btn {
+  max-width: 100%;
+}
+
+/* Адаптивные отступы */
+.compiler-content {
+  padding: 0 max(16px, 2vw);
+}
+
+/* Принудительное ограничение размеров графика */
+.graph-wrapper {
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+  position: relative;
+}
+
+/* Стили для предотвращения увеличения при загрузке */
+.loading-graph {
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+/* Фикс для различных браузеров */
+@-moz-document url-prefix() {
+  .cytoscape-container {
+    overflow: hidden !important;
+  }
+}
+
+/* Edge/IE specific */
+_:-ms-lang(x), .cytoscape-container {
+  overflow: hidden !important;
+}
+
+/* Safari specific */
+_::-webkit-full-page-media, _:future, :root .cytoscape-container {
+  overflow: hidden !important;
+}

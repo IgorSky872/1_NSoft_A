@@ -15,9 +15,10 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
   const [activeTab, setActiveTab] = useState('graph');
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Cytoscape.Core | null>(null);
+  const [graphKey, setGraphKey] = useState(0); // Для принудительного перерендера
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerRef.current || !onnxData) return;
 
     // Уничтожаем предыдущий граф перед рендером нового
     if (cyRef.current) {
@@ -63,12 +64,17 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
           return;
         }
 
-        // ВАЖНО: Фиксируем размеры контейнера
+        // КРИТИЧНО: Фиксируем размеры контейнера ЖЕСТКО
         const container = containerRef.current!;
-        container.style.width = '100%';
-        container.style.height = '600px';
+        const containerWidth = container.parentElement?.clientWidth || 800;
+        const containerHeight = 600;
+
+        container.style.width = `${containerWidth}px`;
+        container.style.height = `${containerHeight}px`;
         container.style.minWidth = '0';
+        container.style.maxWidth = '100%';
         container.style.overflow = 'hidden';
+        container.style.position = 'relative';
 
         const cy = Cytoscape({
           container: container,
@@ -79,27 +85,27 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
               style: {
                 'background-color': '#1890ff',
                 'label': 'data(label)',
-                'width': '80px',
-                'height': '40px',
+                'width': '60px', // Уменьшили размер для лучшей посадки
+                'height': '30px',
                 'text-valign': 'center',
                 'text-halign': 'center',
-                'font-size': '10px',
+                'font-size': '9px',
                 'color': '#fff',
-                'text-outline-width': 2,
+                'text-outline-width': 1,
                 'text-outline-color': '#1890ff',
                 'shape': 'rectangle',
-                'border-radius': '4px',
+                'border-radius': '3px',
               },
             },
             {
               selector: 'edge',
               style: {
-                'width': 2,
+                'width': 1.5,
                 'line-color': '#d9d9d9',
                 'target-arrow-color': '#d9d9d9',
                 'target-arrow-shape': 'triangle',
                 'label': 'data(label)',
-                'font-size': '8px',
+                'font-size': '7px',
                 'color': '#666',
                 'curve-style': 'bezier',
               },
@@ -116,14 +122,14 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
           layout: {
             name: 'dagre',
             rankDir: 'LR',
-            padding: 20,
-            nodeSep: 50,
-            rankSep: 100,
-            fit: true, // Граф будет подогнан под контейнер
-            spacingFactor: 1,
+            padding: 10,
+            nodeSep: 40,
+            rankSep: 80,
+            fit: true, // ВАЖНО: подгоняем граф под контейнер
+            spacingFactor: 0.7,
           },
-          minZoom: 0.5,
-          maxZoom: 2,
+          minZoom: 0.3,
+          maxZoom: 3,
           // Параметры для предотвращения скачков
           boxSelectionEnabled: false,
           autounselectify: true,
@@ -141,6 +147,11 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
         // Фиксируем размер после готовности графа
         cy.ready(() => {
           container.style.overflow = 'hidden';
+          // Принудительно подгоняем граф
+          setTimeout(() => {
+            cy.fit();
+            cy.center();
+          }, 100);
         });
 
         cyRef.current = cy;
@@ -159,6 +170,13 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
         cyRef.current = null;
       }
     };
+  }, [onnxData, graphKey]); // Добавляем graphKey для перерендера
+
+  // Принудительный перерендер при изменении данных
+  useEffect(() => {
+    if (onnxData) {
+      setGraphKey(prev => prev + 1);
+    }
   }, [onnxData]);
 
   if (!modelPath && !onnxData) {
@@ -186,21 +204,37 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
           ref={containerRef}
           style={{
             width: '100%',
+            maxWidth: '100%',
             height: '600px',
             border: '1px solid #d9d9d9',
             borderRadius: '8px',
             background: '#fafafa',
-            // Предотвращаем расширение контейнера
+            // КРИТИЧНО: Предотвращаем любое расширение
             overflow: 'hidden !important',
             flexShrink: 0,
             minWidth: 0,
+            position: 'relative',
           }}
         />
       ),
     },
   ];
 
-  return <Tabs activeKey={activeTab} onChange={setActiveTab} items={items} />;
+  return (
+    <div style={{
+      maxWidth: '100%',
+      overflow: 'hidden',
+      width: '100%',
+      position: 'relative'
+    }}>
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        items={items}
+        style={{ maxWidth: '100%' }}
+      />
+    </div>
+  );
 };
 
 export default OnnxGraph;

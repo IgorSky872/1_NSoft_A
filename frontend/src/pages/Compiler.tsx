@@ -153,20 +153,52 @@ const Compiler: React.FC = () => {
       children: graphPath && (
         <Card
           title="Model Visualization"
-          style={{ width: '100%', overflow: 'hidden' }} // Предотвращаем расширение
+          style={{
+            width: '100%',
+            maxWidth: '100%',
+            overflow: 'hidden' // КРИТИЧНО: предотвращаем расширение
+          }}
+          bodyStyle={{
+            overflow: 'hidden',
+            maxWidth: '100%',
+            padding: '16px', // Уменьшаем отступы
+            position: 'relative'
+          }}
         >
-          <OnnxGraph modelPath={graphPath} onnxData={onnxData} />
+          <div style={{
+            maxWidth: '100%',
+            overflow: 'hidden',
+            position: 'relative',
+            width: '100%'
+          }}>
+            <OnnxGraph modelPath={graphPath} onnxData={onnxData} />
+          </div>
         </Card>
       ),
     },
   ];
 
   return (
-    <div>
+    <div style={{
+      maxWidth: '100%',
+      overflow: 'hidden',
+      width: '100%',
+      position: 'relative'
+    }}>
       <h1>Neural Network Compiler: {selectedDevice}</h1>
-      <Tabs defaultActiveKey="upload" items={items} />
+      <div style={{
+        maxWidth: '100%',
+        overflow: 'hidden'
+      }}>
+        <Tabs
+          defaultActiveKey="upload"
+          items={items}
+          destroyInactiveTabPane={true}
+          style={{ maxWidth: '100%' }}
+        />
+      </div>
 
-      <Card title="Quantization" style={{ marginTop: 24 }}>
+      <Card title="Quantization" style={{ marginTop: 24, maxWidth: '100%' }}>
         <Space>
           <Select value={quantType} onChange={setQuantType} style={{ width: 120 }}>
             <Option value="int8">INT8</Option>
@@ -183,7 +215,7 @@ const Compiler: React.FC = () => {
         </Space>
       </Card>
 
-      <Card title="Compile Firmware" style={{ marginTop: 24 }}>
+      <Card title="Compile Firmware" style={{ marginTop: 24, maxWidth: '100%' }}>
         <Button
           onClick={handleCompile}
           loading={compiling}
