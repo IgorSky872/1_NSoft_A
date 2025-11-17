@@ -22,20 +22,16 @@ def get_db():
 ============================================================
 FILE: backend\app\main.py
 ============================================================
+# backend/app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine
 from app.models.base import Base
+from dotenv import load_dotenv  # ← Добавьте импорт
+import os
 
-# Импорт роутеров
-from app.api.auth_router import router as auth_router
-from app.api.compiler_router import router as compiler_router
-from app.api.device_router import router as device_router
-from app.api.inference_router import router as inference_router
-from app.api.workflow_router import router as workflow_router
-from app.api.diagnostics_router import router as diagnostics_router
-from app.api.onnx_router import router as onnx_router
-
+# Загружаем переменные из .env файла
+load_dotenv()
 
 # Создать таблицы
 Base.metadata.create_all(bind=engine)
@@ -49,13 +45,21 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,  # ← Используйте конкретный список вместо "*"
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Подключить роутеры
+# Импорт и подключение роутеров...
+from app.api.auth_router import router as auth_router
+from app.api.compiler_router import router as compiler_router
+from app.api.device_router import router as device_router
+from app.api.inference_router import router as inference_router
+from app.api.workflow_router import router as workflow_router
+from app.api.diagnostics_router import router as diagnostics_router
+from app.api.onnx_router import router as onnx_router
+
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(device_router, prefix="/api", tags=["devices"])
 app.include_router(workflow_router, prefix="/api/workflow", tags=["workflow"])
@@ -63,7 +67,6 @@ app.include_router(diagnostics_router, prefix="/api", tags=["diagnostics"])
 app.include_router(compiler_router, prefix="/api/compiler", tags=["compiler"])
 app.include_router(inference_router, prefix="/api", tags=["inference"])
 app.include_router(onnx_router, prefix="/api", tags=["onnx"])
-
 
 @app.get("/health")
 def health_check():
@@ -119,7 +122,7 @@ from app.models.workflow_models import DeviceWorkflowStatus, WorkflowStep
 from app.database import get_db
 from app.auth.dependencies import get_current_user  # ИЗМЕНЕНО
 
-router = APIRouter()
+router = APIRouter(tags=["compiler"])
 
 # Создаем путь к tmp внутри проекта (на уровне app/)
 PROJECT_TMP_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'tmp')
@@ -507,14 +510,20 @@ def authenticate_user(username: str, password: str) -> Optional[UserInDB]:
 ============================================================
 FILE: backend\app\auth\utils.py
 ============================================================
+# backend/app/auth/utils.py
 from datetime import datetime, timedelta
 from typing import Optional
+import os  # ← Добавьте импорт
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
-SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
+# Получаем SECRET_KEY из переменных окружения
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise ValueError("JWT_SECRET_KEY is not set in environment variables")
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -662,7 +671,7 @@ class WorkflowStep(str, enum.Enum):
 class DeviceWorkflowStatus(Base):
     __tablename__ = "workflow_status"
 
-    device_id = Column(String, primary_key=True)
+    device_id = Column(String, primary_key=True, index=True)
     current_step = Column(SQLEnum(WorkflowStep), default=WorkflowStep.DASHBOARD)
     compiled_firmware = Column(String, nullable=True)
 
@@ -4317,7 +4326,7 @@ const LoginForm: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
     e.preventDefault();
     setError('');
     try {
-      const res = await axios.post('/api/login', new URLSearchParams({ username, password }), {
+      const res = await api.post('/api/login', new URLSearchParams({ username, password }), {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
       });
       localStorage.setItem('token', res.data.access_token);
@@ -4377,32 +4386,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import Cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import { Card, Tabs } from 'antd';
+import type { OnnxData, OnnxNode, OnnxEdge } from '../types';  // ← Импорт типов
 
-// Регистрируем dagre layout
 Cytoscape.use(dagre);
 
-interface OnnxNode {
-  name: string;
-  op_type: string;
-  inputs: string[];
-  outputs: string[];
-  attributes: Record<string, any>;
-}
-
-interface OnnxEdge {
-  from_: string;
-  to: string;
-  label: string;
-}
-
-interface OnnxData {
-  nodes: OnnxNode[];
-  edges: OnnxEdge[];
-}
-
 interface OnnxGraphProps {
-  modelPath?: string;
-  onnxData?: OnnxData | null;
+  modelPath?: string | null;
+  onnxData?: OnnxData | null;  // ← Указали конкретный тип
 }
 
 const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
@@ -4413,7 +4403,6 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Очистка предыдущего графа
     if (cyRef.current) {
       cyRef.current.destroy();
       cyRef.current = null;
@@ -4423,7 +4412,6 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
       try {
         let elements: any;
 
-        // ✅ ИСПРАВЛЕНО: Используем реальные данные если они есть
         if (onnxData?.nodes && onnxData.nodes.length > 0) {
           console.log('Rendering real ONNX data:', onnxData);
 
@@ -4440,57 +4428,26 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
 
           const edges = onnxData.edges.map((edge: OnnxEdge) => ({
             data: {
-              source: edge.from_,
+              source: edge.from,
               target: edge.to,
               label: edge.label,
             },
           }));
 
           elements = { nodes, edges };
-        }
-        // Показываем плейсхолдер если файл загружен но данных еще нет
-        else if (modelPath) {
+        } else if (modelPath) {
           elements = {
-            nodes: [
-              { data: { id: 'loading', label: 'Loading graph...' } },
-            ],
+            nodes: [{ data: { id: 'loading', label: 'Loading graph...' } }],
             edges: [],
           };
         } else {
-          return; // Ничего не делаем
+          return;
         }
 
         const cy = Cytoscape({
           container: containerRef.current,
           elements: elements,
-          style: [
-            {
-              selector: 'node',
-              style: {
-                'background-color': '#1890ff',
-                'label': 'data(label)',
-                'text-valign': 'center',
-                'color': '#fff',
-                'text-outline-width': 2,
-                'text-outline-color': '#1890ff',
-                'height': 50,
-                'width': 120,
-                'font-size': '10px',
-              },
-            },
-            {
-              selector: 'edge',
-              style: {
-                'curve-style': 'bezier',
-                'source-arrow-shape': 'triangle',
-                'line-color': '#ddd',
-                'target-arrow-color': '#ddd',
-                'label': 'data(label)',
-                'font-size': '8px',
-                'color': '#666',
-              },
-            },
-          ],
+          style: [ /* ... */ ],
           layout: {
             name: 'dagre',
             rankDir: 'LR',
@@ -4512,7 +4469,7 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
         cyRef.current = null;
       }
     };
-  }, [modelPath, onnxData]); // Перерендер при изменении данных
+  }, [modelPath, onnxData]);
 
   const items = [
     {
@@ -4849,12 +4806,8 @@ export default SidebarContent;
 FILE: frontend\src\context\AuthContext.tsx
 ============================================================
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import type { User, TokenResponse } from '../types';  // ← Импорт типов
 import api from '../services/api';
-
-interface User {
-  username: string;
-  role?: string;
-}
 
 interface AuthContextType {
   user: User | null;
@@ -4875,7 +4828,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const token = localStorage.getItem('access_token');
       if (token) {
         try {
-          const response = await api.get('/auth/me');
+          const response = await api.get<User>('/auth/me');  // ← Указали тип
           setUser(response.data);
         } catch (error) {
           localStorage.removeItem('access_token');
@@ -4888,31 +4841,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (username: string, password: string) => {
     setLoading(true);
     try {
-      // Создаем формат application/x-www-form-urlencoded
       const params = new URLSearchParams();
       params.append('username', username);
       params.append('password', password);
 
-      // Логируем что отправляем
-      console.log('Sending login data:', { username, password });
-      console.log('Content-Type:', 'application/x-www-form-urlencoded');
-      console.log('URL:', '/auth/login');
-
-      const response = await api.post('/auth/login', params.toString(), {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
+      const response = await api.post<TokenResponse>('/auth/login', params.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
       });
-
-      console.log('Login response:', response.data);
 
       const { access_token } = response.data;
       localStorage.setItem('access_token', access_token);
 
-      const userResponse = await api.get('/auth/me');
+      const userResponse = await api.get<User>('/auth/me');
       setUser(userResponse.data);
-    } catch (error: any) {
-      console.error('Login failed full error:', error.response?.data || error);
+    } catch (error) {
+      console.error('Login failed:', error);
       throw error;
     } finally {
       setLoading(false);
@@ -4924,15 +4867,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(null);
   };
 
-  const value: AuthContextType = {
-    user,
-    isAuthenticated: !!user,
-    login,
-    logout,
-    loading,
-  };
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, logout, loading }}>{children}</AuthContext.Provider>;
 };
 
 export const useAuth = () => {
@@ -4945,9 +4880,8 @@ export const useAuth = () => {
 FILE: frontend\src\context\WorkflowContext.tsx
 ============================================================
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import type { WorkflowStatus, WorkflowStep } from '../types';  // ← Импорт типов
 import api from '../services/api';
-
-type WorkflowStep = 'dashboard' | 'diagnostics' | 'compiler' | 'inference';
 
 interface WorkflowContextType {
   selectedDevice: string | null;
@@ -4969,7 +4903,7 @@ export const WorkflowProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const deviceId = localStorage.getItem('selectedDevice');
       if (deviceId) {
         try {
-          const res = await api.get(`/workflow/status/${deviceId}`);
+          const res = await api.get<WorkflowStatus>(`/workflow/status/${deviceId}`);
           setSelectedDevice(deviceId);
           setCurrentStep(res.data.current_step);
         } catch (err) {
@@ -5174,12 +5108,13 @@ export default Compiler;
 FILE: frontend\src\pages\Dashboard.tsx
 ============================================================
 import React, { useEffect, useState } from 'react';
-import { Card, List, Button, Tag, Spin, Alert, Space } from 'antd';
+import { Card, List, Button, Tag, Spin, Space, message } from 'antd';
 import { useWorkflow } from '../context/WorkflowContext';
 import api from '../services/api';
+import type { Device } from '../types';  // ← Импорт типов
 
 const Dashboard: React.FC = () => {
-  const [devices, setDevices] = useState<any[]>([]);
+  const [devices, setDevices] = useState<Device[]>([]);  // ← Убрали any
   const [loading, setLoading] = useState(false);
   const { selectDevice, loading: workflowLoading } = useWorkflow();
 
@@ -5190,10 +5125,10 @@ const Dashboard: React.FC = () => {
   const loadDevices = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/devices');
+      const res = await api.get<{ devices: Device[] }>('/devices');  // ← Указали тип
       setDevices(res.data.devices);
     } catch (err) {
-      Alert.error('Failed to load devices');
+      message.error('Failed to load devices');
     } finally {
       setLoading(false);
     }
@@ -5204,7 +5139,7 @@ const Dashboard: React.FC = () => {
       await api.post('/devices/mock');
       loadDevices();
     } catch (err) {
-      Alert.error('Failed to create mock device');
+      message.error('Failed to create mock device');
     }
   };
 
@@ -5219,7 +5154,7 @@ const Dashboard: React.FC = () => {
           <List
             grid={{ gutter: 16, column: 2 }}
             dataSource={devices}
-            renderItem={dev => (
+            renderItem={(dev: Device) => (  // ← Указали тип
               <List.Item>
                 <Card
                   title={dev.id}
@@ -5322,7 +5257,7 @@ export default Diagnostics;
 FILE: frontend\src\pages\Inference.tsx
 ============================================================
 import React, { useState } from 'react';
-import { Card, Upload, Button, Tabs, Table, Image, Space, Alert } from 'antd';
+import { Card, Upload, Button, Tabs, Table, Image, Space, Alert, message } from 'antd';
 import { UploadOutlined, PlayCircleOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useWorkflow } from '../context/WorkflowContext';
 import api from '../services/api';
@@ -5353,9 +5288,9 @@ const Inference: React.FC = () => {
     try {
       await api.post('/inference/flash', formData);
       setFirmwareFlashed(true);
-      Alert.success('Firmware flashed successfully');
+      message.success('Firmware flashed successfully');
     } catch (err) {
-      Alert.error('Failed to flash firmware');
+      message.error('Failed to flash firmware');
     }
   };
 
@@ -5369,7 +5304,7 @@ const Inference: React.FC = () => {
       const res = await api.post('/inference/infer', formData);
       setResults(res.data.results);
     } catch (err) {
-      Alert.error('Inference failed');
+      message.error('Inference failed');
     } finally {
       setRunning(false);
     }
@@ -5536,5 +5471,141 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// frontend/src/services/api.ts
+api.interceptors.response.use(
+  response => response,
+  error => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('access_token');
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
 export default api;
+
+============================================================
+FILE: frontend\src\types\index.ts
+============================================================
+// frontend/src/types/index.ts
+
+// ===== АУТЕНТИФИКАЦИЯ =====
+export interface User {
+  username: string;
+  role?: string;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+}
+
+// ===== УСТРОЙСТВА =====
+export interface DeviceCore {
+  id: number;
+  status: string;
+}
+
+export interface DeviceMemristor {
+  id: number;
+  status: string;
+}
+
+export interface Device {
+  id: string;
+  status: 'idle' | 'busy' | 'error';
+  version: string;
+  cores?: DeviceCore[];
+  memristors?: DeviceMemristor[];
+  diagnostics?: DeviceDiagnostics;
+  is_mock: boolean;
+}
+
+export interface DeviceDiagnostics {
+  cores: { id: number; status: string }[];
+  memristors: { available: number; total: number };
+  overall_status: string;
+}
+
+// ===== WORKFLOW =====
+export type WorkflowStep = 'dashboard' | 'diagnostics' | 'compiler' | 'inference';
+
+export interface WorkflowStatus {
+  device_id: string;
+  current_step: WorkflowStep;
+  compiled_firmware?: string | null;
+}
+
+// ===== ONNX МОДЕЛИ =====
+export interface OnnxNode {
+  name: string;
+  op_type: string;
+  inputs: string[];
+  outputs: string[];
+  attributes: Record<string, any>;
+}
+
+export interface OnnxEdge {
+  from: string;
+  to: string;
+  label: string;
+}
+
+export interface OnnxWeight {
+  shape: number[];
+  dtype: string;
+  values: number[];
+}
+
+export interface OnnxData {
+  nodes: OnnxNode[];
+  edges: OnnxEdge[];
+  weights: Record<string, OnnxWeight>;
+  model_metadata: {
+    producer_name?: string;
+    producer_version?: string;
+    domain?: string;
+    description?: string;
+  };
+}
+
+export interface WeightItem {
+  name: string;
+  shape: number[];
+  dtype: string;
+  values: number[];
+}
+
+// ===== API ОТВЕТЫ =====
+export interface ApiResponse<T> {
+  data: T;
+  status: number;
+  message?: string;
+}
+
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+// ===== ПРОПСЫ КОМПОНЕНТОВ =====
+export interface SidebarProps {
+  isOpen: boolean;
+}
+
+export interface OnnxGraphProps {
+  modelPath?: string | null;
+  onnxData?: OnnxData | null;
+}
+
+export interface InferenceToolbarProps {
+  onUpload: () => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onModelProps: () => void;
+  onNodeProps: () => void;
+}
 

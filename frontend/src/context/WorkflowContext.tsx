@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import type { WorkflowStatus, WorkflowStep } from '../types';  // ← Импорт типов
 import api from '../services/api';
-
-type WorkflowStep = 'dashboard' | 'diagnostics' | 'compiler' | 'inference';
 
 interface WorkflowContextType {
   selectedDevice: string | null;
@@ -23,7 +22,7 @@ export const WorkflowProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const deviceId = localStorage.getItem('selectedDevice');
       if (deviceId) {
         try {
-          const res = await api.get(`/workflow/status/${deviceId}`);
+          const res = await api.get<WorkflowStatus>(`/workflow/status/${deviceId}`);
           setSelectedDevice(deviceId);
           setCurrentStep(res.data.current_step);
         } catch (err) {

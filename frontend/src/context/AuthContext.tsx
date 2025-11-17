@@ -1,10 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import type { User, TokenResponse } from '../types';  // ← Импорт типов
 import api from '../services/api';
-
-interface User {
-  username: string;
-  role?: string;
-}
 
 interface AuthContextType {
   user: User | null;
@@ -25,7 +21,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const token = localStorage.getItem('access_token');
       if (token) {
         try {
-          const response = await api.get('/auth/me');
+          const response = await api.get<User>('/auth/me');  // ← Указали тип
           setUser(response.data);
         } catch (error) {
           localStorage.removeItem('access_token');
@@ -38,31 +34,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (username: string, password: string) => {
     setLoading(true);
     try {
-      // Создаем формат application/x-www-form-urlencoded
       const params = new URLSearchParams();
       params.append('username', username);
       params.append('password', password);
 
-      // Логируем что отправляем
-      console.log('Sending login data:', { username, password });
-      console.log('Content-Type:', 'application/x-www-form-urlencoded');
-      console.log('URL:', '/auth/login');
-
-      const response = await api.post('/auth/login', params.toString(), {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
+      const response = await api.post<TokenResponse>('/auth/login', params.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
       });
-
-      console.log('Login response:', response.data);
 
       const { access_token } = response.data;
       localStorage.setItem('access_token', access_token);
 
-      const userResponse = await api.get('/auth/me');
+      const userResponse = await api.get<User>('/auth/me');
       setUser(userResponse.data);
-    } catch (error: any) {
-      console.error('Login failed full error:', error.response?.data || error);
+    } catch (error) {
+      console.error('Login failed:', error);
       throw error;
     } finally {
       setLoading(false);
@@ -74,15 +60,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(null);
   };
 
-  const value: AuthContextType = {
-    user,
-    isAuthenticated: !!user,
-    login,
-    logout,
-    loading,
-  };
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, logout, loading }}>{children}</AuthContext.Provider>;
 };
 
 export const useAuth = () => {

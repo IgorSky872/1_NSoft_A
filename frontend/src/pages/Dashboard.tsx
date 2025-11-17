@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { Card, List, Button, Tag, Spin, Alert, Space } from 'antd';
+import { Card, List, Button, Tag, Spin, Space, message } from 'antd';
 import { useWorkflow } from '../context/WorkflowContext';
 import api from '../services/api';
+import type { Device } from '../types';  // ← Импорт типов
 
 const Dashboard: React.FC = () => {
-  const [devices, setDevices] = useState<any[]>([]);
+  const [devices, setDevices] = useState<Device[]>([]);  // ← Убрали any
   const [loading, setLoading] = useState(false);
   const { selectDevice, loading: workflowLoading } = useWorkflow();
 
@@ -15,10 +16,10 @@ const Dashboard: React.FC = () => {
   const loadDevices = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/devices');
+      const res = await api.get<{ devices: Device[] }>('/devices');  // ← Указали тип
       setDevices(res.data.devices);
     } catch (err) {
-      Alert.error('Failed to load devices');
+      message.error('Failed to load devices');
     } finally {
       setLoading(false);
     }
@@ -29,7 +30,7 @@ const Dashboard: React.FC = () => {
       await api.post('/devices/mock');
       loadDevices();
     } catch (err) {
-      Alert.error('Failed to create mock device');
+      message.error('Failed to create mock device');
     }
   };
 
@@ -44,7 +45,7 @@ const Dashboard: React.FC = () => {
           <List
             grid={{ gutter: 16, column: 2 }}
             dataSource={devices}
-            renderItem={dev => (
+            renderItem={(dev: Device) => (  // ← Указали тип
               <List.Item>
                 <Card
                   title={dev.id}

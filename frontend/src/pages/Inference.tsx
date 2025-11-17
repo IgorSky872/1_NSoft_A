@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Card, Upload, Button, Tabs, Table, Image, Space, Alert } from 'antd';
+import { Card, Upload, Button, Tabs, Table, Image, Space, Alert, message } from 'antd';
 import { UploadOutlined, PlayCircleOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useWorkflow } from '../context/WorkflowContext';
 import api from '../services/api';
@@ -30,9 +30,9 @@ const Inference: React.FC = () => {
     try {
       await api.post('/inference/flash', formData);
       setFirmwareFlashed(true);
-      Alert.success('Firmware flashed successfully');
+      message.success('Firmware flashed successfully');
     } catch (err) {
-      Alert.error('Failed to flash firmware');
+      message.error('Failed to flash firmware');
     }
   };
 
@@ -46,7 +46,7 @@ const Inference: React.FC = () => {
       const res = await api.post('/inference/infer', formData);
       setResults(res.data.results);
     } catch (err) {
-      Alert.error('Inference failed');
+      message.error('Inference failed');
     } finally {
       setRunning(false);
     }

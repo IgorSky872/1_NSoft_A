@@ -1,32 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
-import { Card, Tabs } from 'antd';
+import { Tabs } from 'antd';
+import type { OnnxData, OnnxNode, OnnxEdge } from '../types';
 
-// Регистрируем dagre layout
 Cytoscape.use(dagre);
 
-interface OnnxNode {
-  name: string;
-  op_type: string;
-  inputs: string[];
-  outputs: string[];
-  attributes: Record<string, any>;
-}
-
-interface OnnxEdge {
-  from: string;
-  to: string;
-  label: string;
-}
-
-interface OnnxData {
-  nodes: OnnxNode[];
-  edges: OnnxEdge[];
-}
-
 interface OnnxGraphProps {
-  modelPath?: string;
+  modelPath?: string | null;
   onnxData?: OnnxData | null;
 }
 
@@ -38,81 +19,89 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Очистка предыдущего графа
+    // Уничтожаем предыдущий граф
     if (cyRef.current) {
       cyRef.current.destroy();
       cyRef.current = null;
     }
 
-    const parseAndRender = async () => {
+    const renderGraph = () => {
       try {
-        let elements: any;
+        // Генерируем уникальные ID для узлов
+        const nodeIdCounter = new Map<string, number>();
 
-        // ✅ ИСПРАВЛЕНО: Используем реальные данные если они есть
-        if (onnxData?.nodes && onnxData.nodes.length > 0) {
-          console.log('Rendering real ONNX data:', onnxData);
+        const nodes = (onnxData?.nodes || []).map((node: OnnxNode) => {
+          const baseId = node.name || node.op_type;
+          const count = (nodeIdCounter.get(baseId) || 0) + 1;
+          nodeIdCounter.set(baseId, count);
+          const uniqueId = count === 1 ? baseId : `${baseId}_${count}`;
 
-          const nodes = onnxData.nodes.map((node: OnnxNode) => ({
+          return {
             data: {
-              id: node.name,
-              label: node.name,
+              id: uniqueId,
+              label: node.name || node.op_type,
               op_type: node.op_type,
               inputs: node.inputs,
               outputs: node.outputs,
               attributes: node.attributes,
             },
-          }));
-
-          const edges = onnxData.edges.map((edge: OnnxEdge) => ({
-            data: {
-              source: edge.from,
-              target: edge.to,
-              label: edge.label,
-            },
-          }));
-
-          elements = { nodes, edges };
-        }
-        // Показываем плейсхолдер если файл загружен но данных еще нет
-        else if (modelPath) {
-          elements = {
-            nodes: [
-              { data: { id: 'loading', label: 'Loading graph...' } },
-            ],
-            edges: [],
           };
-        } else {
-          return; // Ничего не делаем
+        });
+
+        const edges = (onnxData?.edges || []).map((edge: OnnxEdge, index: number) => ({
+          data: {
+            id: `edge_${index}`,
+            source: edge.from,
+            target: edge.to,
+            label: edge.label,
+          },
+        }));
+
+        if (nodes.length === 0) {
+          console.warn('No nodes to render');
+          return;
         }
 
         const cy = Cytoscape({
           container: containerRef.current,
-          elements: elements,
+          elements: { nodes, edges },
           style: [
             {
               selector: 'node',
               style: {
                 'background-color': '#1890ff',
                 'label': 'data(label)',
+                'width': '80px',
+                'height': '40px',
                 'text-valign': 'center',
+                'text-halign': 'center',
+                'font-size': '10px',
                 'color': '#fff',
                 'text-outline-width': 2,
                 'text-outline-color': '#1890ff',
-                'height': 50,
-                'width': 120,
-                'font-size': '10px',
+                'shape': 'rectangle',
+                'border-radius': '4px',
               },
             },
             {
               selector: 'edge',
               style: {
-                'curve-style': 'bezier',
-                'source-arrow-shape': 'triangle',
-                'line-color': '#ddd',
-                'target-arrow-color': '#ddd',
+                'width': 2,
+                'line-color': '#d9d9d9',
+                'target-arrow-color': '#d9d9d9',
+                'target-arrow-shape': 'triangle',
                 'label': 'data(label)',
                 'font-size': '8px',
                 'color': '#666',
+                'curve-style': 'bezier',
+              },
+            },
+            {
+              selector: ':selected',
+              style: {
+                'background-color': '#52c41a',
+                'line-color': '#52c41a',
+                'target-arrow-color': '#52c41a',
               },
             },
           ],
@@ -120,7 +109,18 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
             name: 'dagre',
             rankDir: 'LR',
             padding: 20,
+            nodeSep: 50,
+            rankSep: 100,
           },
+          minZoom: 0.5,
+          maxZoom: 2,
+        });
+
+        // Добавляем обработчик клика по узлу
+        cy.on('tap', 'node', (event) => {
+          const node = event.target;
+          console.log('Node clicked:', node.data());
+          // Можно добавить вывод свойств узла в сайдбар
         });
 
         cyRef.current = cy;
@@ -129,15 +129,32 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
       }
     };
 
-    parseAndRender();
+    renderGraph();
 
+    // Cleanup
     return () => {
       if (cyRef.current) {
         cyRef.current.destroy();
         cyRef.current = null;
       }
     };
-  }, [modelPath, onnxData]); // Перерендер при изменении данных
+  }, [onnxData]);
+
+  if (!modelPath && !onnxData) {
+    return (
+      <div style={{ padding: 20, textAlign: 'center', color: '#999' }}>
+        Upload an ONNX file to visualize the graph
+      </div>
+    );
+  }
+
+  if (onnxData && onnxData.nodes.length === 0) {
+    return (
+      <div style={{ padding: 20, textAlign: 'center', color: '#faad14' }}>
+        No graph data available in this ONNX model
+      </div>
+    );
+  }
 
   const items = [
     {
@@ -150,16 +167,13 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
             width: '100%',
             height: '600px',
             border: '1px solid #d9d9d9',
-            background: '#fafafa'
+            borderRadius: '8px',
+            background: '#fafafa',
           }}
         />
       ),
     },
   ];
-
-  if (!modelPath && !onnxData) {
-    return <div style={{ padding: 20, textAlign: 'center' }}>Upload an ONNX file to visualize the graph</div>;
-  }
 
   return <Tabs activeKey={activeTab} onChange={setActiveTab} items={items} />;
 };
