@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import type { User, TokenResponse } from '../types';  // ← Импорт типов
+import type { User, TokenResponse } from '../types';
 import api from '../services/api';
 
 interface AuthContextType {
@@ -21,10 +21,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const token = localStorage.getItem('access_token');
       if (token) {
         try {
-          const response = await api.get<User>('/auth/me');  // ← Указали тип
-          setUser(response.data);
+          const response = await api.get<User>('/auth/me');
+          // Добавляем время входа при загрузке из localStorage
+          setUser({
+            ...response.data,
+            loginTime: Number(localStorage.getItem('loginTime')) || Date.now()
+          });
         } catch (error) {
           localStorage.removeItem('access_token');
+          localStorage.removeItem('loginTime');
+          setUser(null);
         }
       }
     };
@@ -45,8 +51,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const { access_token } = response.data;
       localStorage.setItem('access_token', access_token);
 
+      // Сохраняем время входа
+      const loginTime = Date.now();
+      localStorage.setItem('loginTime', loginTime.toString());
+
       const userResponse = await api.get<User>('/auth/me');
-      setUser(userResponse.data);
+      setUser({
+        ...userResponse.data,
+        loginTime
+      });
     } catch (error) {
       console.error('Login failed:', error);
       throw error;
@@ -57,10 +70,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = () => {
     localStorage.removeItem('access_token');
+    localStorage.removeItem('loginTime');
     setUser(null);
   };
 
-  return <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, logout, loading }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, logout, loading }}>
+      {children}
+    </AuthContext.Provider>
+  );
 };
 
 export const useAuth = () => {

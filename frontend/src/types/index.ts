@@ -4,6 +4,7 @@
 export interface User {
   username: string;
   role?: string;
+  loginTime?: number;
 }
 
 export interface TokenResponse {
