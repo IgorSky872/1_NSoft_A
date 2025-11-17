@@ -36,17 +36,6 @@ def verify_token(token: str) -> Optional[dict]:
     except JWTError:
         return None
 
-def verify_token_dep(token: str = Depends(oauth2_scheme)):
-    """Версия для использования как Depends в роутерах"""
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-        return payload
-    except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
-
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
