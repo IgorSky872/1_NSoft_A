@@ -4,6 +4,7 @@ import { UploadOutlined } from '@ant-design/icons';
 import { useWorkflow } from '../context/WorkflowContext';
 import api from '../services/api';
 import OnnxGraph from '../components/OnnxGraph';
+import type { OnnxData } from '../types';  // ← Импорт правильного типа
 
 const { Dragger } = Upload;
 const { Option } = Select;
@@ -11,15 +12,17 @@ const { Option } = Select;
 const Compiler: React.FC = () => {
   const [modelFile, setModelFile] = useState<File | null>(null);
   const [graphPath, setGraphPath] = useState<string | null>(null);
-  const [onnxData, setOnnxData] = useState<any>(null); // ← Добавили state
+  const [onnxData, setOnnxData] = useState<OnnxData | null>(null);  // ← ТИПИЗИРОВАННЫЙ STATE
   const [quantType, setQuantType] = useState('int8');
   const [quantizing, setQuantizing] = useState(false);
   const [compiling, setCompiling] = useState(false);
   const [quantizedPath, setQuantizedPath] = useState<string | null>(null);
+  const [parsing, setParsing] = useState(false);  // ← НОВЫЙ STATE для индикатора
   const { selectedDevice, unlockStep } = useWorkflow();
 
-  // ✅ НОВАЯ ФУНКЦИЯ: Парсим ONNX через API
+  // ✅ УЛУЧШЕННАЯ ФУНКЦИЯ С ВАЛИДАЦИЕЙ и ДЕТАЛЬНОЙ ОБРАБОТКОЙ ОШИБОК
   const parseOnnxModel = async (file: File) => {
+    setParsing(true);
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -28,11 +31,46 @@ const Compiler: React.FC = () => {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
 
+      // === ВАЛИДАЦИЯ ОТВЕТА ===
+      if (!response.data) {
+        throw new Error('Empty response from server');
+      }
+
+      if (!Array.isArray(response.data.nodes)) {
+        throw new Error('Invalid ONNX data structure: missing nodes array');
+      }
+
+      if (response.data.nodes.length === 0) {
+        message.warning('No graph nodes found in this ONNX model');
+      }
+
       setOnnxData(response.data);
-      message.success('Model parsed successfully');
-    } catch (error) {
+      message.success(`Model parsed successfully: ${response.data.nodes.length} nodes`);
+
+    } catch (error: any) {
       console.error('Error parsing ONNX:', error);
-      message.error('Failed to parse ONNX model');
+
+      // === ДЕТАЛЬНАЯ ОБРАБОТКА ОШИБОК ===
+      let errorMessage = 'Failed to parse ONNX model';
+
+      if (error.response?.status === 400) {
+        errorMessage = `Invalid model format: ${error.response.data?.detail || 'Unknown error'}`;
+      } else if (error.response?.status === 413) {
+        errorMessage = 'Model file too large (>10MB)';
+      } else if (error.message?.includes('nodes')) {
+        errorMessage = error.message; // Наша кастомная ошибка валидации
+      } else if (!error.response) {
+        errorMessage = 'Network error: Cannot connect to server';
+      }
+
+      message.error(errorMessage);
+
+      // === ОЧИСТКА СОСТОЯНИЯ ПРИ ОШИБКЕ ===
+      setOnnxData(null);
+      setGraphPath(null);
+
+    } finally {
+      setParsing(false);
     }
   };
 
@@ -40,7 +78,7 @@ const Compiler: React.FC = () => {
     setModelFile(file);
     const url = URL.createObjectURL(file);
     setGraphPath(url);
-    await parseOnnxModel(file); // ← Парсим после загрузки
+    await parseOnnxModel(file); // Парсим немедленно после загрузки
   };
 
   const handleQuantize = async () => {
@@ -50,7 +88,6 @@ const Compiler: React.FC = () => {
     }
 
     setQuantizing(true);
-
     const formData = new FormData();
     formData.append('file', modelFile);
     formData.append('quant_type', quantType);
@@ -105,16 +142,17 @@ const Compiler: React.FC = () => {
             </p>
             <p>Click or drag ONNX file to this area</p>
           </Dragger>
+          {parsing && <div style={{ marginTop: 16 }}>Parsing model...</div>}
         </Card>
       ),
     },
     {
       key: 'graph',
       label: 'Graph View',
-      disabled: !graphPath,
+      disabled: !graphPath || parsing,
       children: graphPath && (
         <Card title="Model Visualization">
-          <OnnxGraph modelPath={graphPath} onnxData={onnxData} /> {/* ← Передаем данные */}
+          <OnnxGraph modelPath={graphPath} onnxData={onnxData} />
         </Card>
       ),
     },

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
-import { Tabs } from 'antd';
+import { Tabs, message } from 'antd';
 import type { OnnxData, OnnxNode, OnnxEdge } from '../types';
 
 Cytoscape.use(dagre);
@@ -19,7 +19,7 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Уничтожаем предыдущий граф
+    // Уничтожаем предыдущий граф перед рендером нового
     if (cyRef.current) {
       cyRef.current.destroy();
       cyRef.current = null;
@@ -27,7 +27,7 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
 
     const renderGraph = () => {
       try {
-        // Генерируем уникальные ID для узлов
+        // Генерируем уникальные ID для дубликатов узлов
         const nodeIdCounter = new Map<string, number>();
 
         const nodes = (onnxData?.nodes || []).map((node: OnnxNode) => {
@@ -57,8 +57,9 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
           },
         }));
 
+        // Валидация перед рендером
         if (nodes.length === 0) {
-          console.warn('No nodes to render');
+          message.warning('No nodes to render in ONNX graph');
           return;
         }
 
@@ -116,22 +117,25 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
           maxZoom: 2,
         });
 
-        // Добавляем обработчик клика по узлу
+        // Обработчик клика по узлу
         cy.on('tap', 'node', (event) => {
           const node = event.target;
-          console.log('Node clicked:', node.data());
-          // Можно добавить вывод свойств узла в сайдбар
+          console.log('Node clicked:', {
+            id: node.id(),
+            data: node.data()
+          });
         });
 
         cyRef.current = cy;
       } catch (error) {
         console.error('Error rendering graph:', error);
+        message.error('Failed to render ONNX graph');
       }
     };
 
     renderGraph();
 
-    // Cleanup
+    // Cleanup при размонтировании
     return () => {
       if (cyRef.current) {
         cyRef.current.destroy();

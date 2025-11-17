@@ -4385,14 +4385,14 @@ FILE: frontend\src\components\OnnxGraph.tsx
 import React, { useEffect, useRef, useState } from 'react';
 import Cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
-import { Card, Tabs } from 'antd';
-import type { OnnxData, OnnxNode, OnnxEdge } from '../types';  // ← Импорт типов
+import { Tabs, message } from 'antd';
+import type { OnnxData, OnnxNode, OnnxEdge } from '../types';
 
 Cytoscape.use(dagre);
 
 interface OnnxGraphProps {
   modelPath?: string | null;
-  onnxData?: OnnxData | null;  // ← Указали конкретный тип
+  onnxData?: OnnxData | null;
 }
 
 const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
@@ -4403,73 +4403,146 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
   useEffect(() => {
     if (!containerRef.current) return;
 
+    // Уничтожаем предыдущий граф перед рендером нового
     if (cyRef.current) {
       cyRef.current.destroy();
       cyRef.current = null;
     }
 
-    const parseAndRender = async () => {
+    const renderGraph = () => {
       try {
-        let elements: any;
+        // Генерируем уникальные ID для дубликатов узлов
+        const nodeIdCounter = new Map<string, number>();
 
-        if (onnxData?.nodes && onnxData.nodes.length > 0) {
-          console.log('Rendering real ONNX data:', onnxData);
+        const nodes = (onnxData?.nodes || []).map((node: OnnxNode) => {
+          const baseId = node.name || node.op_type;
+          const count = (nodeIdCounter.get(baseId) || 0) + 1;
+          nodeIdCounter.set(baseId, count);
+          const uniqueId = count === 1 ? baseId : `${baseId}_${count}`;
 
-          const nodes = onnxData.nodes.map((node: OnnxNode) => ({
+          return {
             data: {
-              id: node.name,
-              label: node.name,
+              id: uniqueId,
+              label: node.name || node.op_type,
               op_type: node.op_type,
               inputs: node.inputs,
               outputs: node.outputs,
               attributes: node.attributes,
             },
-          }));
-
-          const edges = onnxData.edges.map((edge: OnnxEdge) => ({
-            data: {
-              source: edge.from,
-              target: edge.to,
-              label: edge.label,
-            },
-          }));
-
-          elements = { nodes, edges };
-        } else if (modelPath) {
-          elements = {
-            nodes: [{ data: { id: 'loading', label: 'Loading graph...' } }],
-            edges: [],
           };
-        } else {
+        });
+
+        const edges = (onnxData?.edges || []).map((edge: OnnxEdge, index: number) => ({
+          data: {
+            id: `edge_${index}`,
+            source: edge.from,
+            target: edge.to,
+            label: edge.label,
+          },
+        }));
+
+        // Валидация перед рендером
+        if (nodes.length === 0) {
+          message.warning('No nodes to render in ONNX graph');
           return;
         }
 
         const cy = Cytoscape({
           container: containerRef.current,
-          elements: elements,
-          style: [ /* ... */ ],
+          elements: { nodes, edges },
+          style: [
+            {
+              selector: 'node',
+              style: {
+                'background-color': '#1890ff',
+                'label': 'data(label)',
+                'width': '80px',
+                'height': '40px',
+                'text-valign': 'center',
+                'text-halign': 'center',
+                'font-size': '10px',
+                'color': '#fff',
+                'text-outline-width': 2,
+                'text-outline-color': '#1890ff',
+                'shape': 'rectangle',
+                'border-radius': '4px',
+              },
+            },
+            {
+              selector: 'edge',
+              style: {
+                'width': 2,
+                'line-color': '#d9d9d9',
+                'target-arrow-color': '#d9d9d9',
+                'target-arrow-shape': 'triangle',
+                'label': 'data(label)',
+                'font-size': '8px',
+                'color': '#666',
+                'curve-style': 'bezier',
+              },
+            },
+            {
+              selector: ':selected',
+              style: {
+                'background-color': '#52c41a',
+                'line-color': '#52c41a',
+                'target-arrow-color': '#52c41a',
+              },
+            },
+          ],
           layout: {
             name: 'dagre',
             rankDir: 'LR',
             padding: 20,
+            nodeSep: 50,
+            rankSep: 100,
           },
+          minZoom: 0.5,
+          maxZoom: 2,
+        });
+
+        // Обработчик клика по узлу
+        cy.on('tap', 'node', (event) => {
+          const node = event.target;
+          console.log('Node clicked:', {
+            id: node.id(),
+            data: node.data()
+          });
         });
 
         cyRef.current = cy;
       } catch (error) {
         console.error('Error rendering graph:', error);
+        message.error('Failed to render ONNX graph');
       }
     };
 
-    parseAndRender();
+    renderGraph();
 
+    // Cleanup при размонтировании
     return () => {
       if (cyRef.current) {
         cyRef.current.destroy();
         cyRef.current = null;
       }
     };
-  }, [modelPath, onnxData]);
+  }, [onnxData]);
+
+  if (!modelPath && !onnxData) {
+    return (
+      <div style={{ padding: 20, textAlign: 'center', color: '#999' }}>
+        Upload an ONNX file to visualize the graph
+      </div>
+    );
+  }
+
+  if (onnxData && onnxData.nodes.length === 0) {
+    return (
+      <div style={{ padding: 20, textAlign: 'center', color: '#faad14' }}>
+        No graph data available in this ONNX model
+      </div>
+    );
+  }
 
   const items = [
     {
@@ -4482,16 +4555,13 @@ const OnnxGraph: React.FC<OnnxGraphProps> = ({ modelPath, onnxData }) => {
             width: '100%',
             height: '600px',
             border: '1px solid #d9d9d9',
-            background: '#fafafa'
+            borderRadius: '8px',
+            background: '#fafafa',
           }}
         />
       ),
     },
   ];
-
-  if (!modelPath && !onnxData) {
-    return <div style={{ padding: 20, textAlign: 'center' }}>Upload an ONNX file to visualize the graph</div>;
-  }
 
   return <Tabs activeKey={activeTab} onChange={setActiveTab} items={items} />;
 };
@@ -4949,6 +5019,7 @@ import { UploadOutlined } from '@ant-design/icons';
 import { useWorkflow } from '../context/WorkflowContext';
 import api from '../services/api';
 import OnnxGraph from '../components/OnnxGraph';
+import type { OnnxData } from '../types';  // ← Импорт правильного типа
 
 const { Dragger } = Upload;
 const { Option } = Select;
@@ -4956,15 +5027,17 @@ const { Option } = Select;
 const Compiler: React.FC = () => {
   const [modelFile, setModelFile] = useState<File | null>(null);
   const [graphPath, setGraphPath] = useState<string | null>(null);
-  const [onnxData, setOnnxData] = useState<any>(null); // ← Добавили state
+  const [onnxData, setOnnxData] = useState<OnnxData | null>(null);  // ← ТИПИЗИРОВАННЫЙ STATE
   const [quantType, setQuantType] = useState('int8');
   const [quantizing, setQuantizing] = useState(false);
   const [compiling, setCompiling] = useState(false);
   const [quantizedPath, setQuantizedPath] = useState<string | null>(null);
+  const [parsing, setParsing] = useState(false);  // ← НОВЫЙ STATE для индикатора
   const { selectedDevice, unlockStep } = useWorkflow();
 
-  // ✅ НОВАЯ ФУНКЦИЯ: Парсим ONNX через API
+  // ✅ УЛУЧШЕННАЯ ФУНКЦИЯ С ВАЛИДАЦИЕЙ и ДЕТАЛЬНОЙ ОБРАБОТКОЙ ОШИБОК
   const parseOnnxModel = async (file: File) => {
+    setParsing(true);
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -4973,11 +5046,46 @@ const Compiler: React.FC = () => {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
 
+      // === ВАЛИДАЦИЯ ОТВЕТА ===
+      if (!response.data) {
+        throw new Error('Empty response from server');
+      }
+
+      if (!Array.isArray(response.data.nodes)) {
+        throw new Error('Invalid ONNX data structure: missing nodes array');
+      }
+
+      if (response.data.nodes.length === 0) {
+        message.warning('No graph nodes found in this ONNX model');
+      }
+
       setOnnxData(response.data);
-      message.success('Model parsed successfully');
-    } catch (error) {
+      message.success(`Model parsed successfully: ${response.data.nodes.length} nodes`);
+
+    } catch (error: any) {
       console.error('Error parsing ONNX:', error);
-      message.error('Failed to parse ONNX model');
+
+      // === ДЕТАЛЬНАЯ ОБРАБОТКА ОШИБОК ===
+      let errorMessage = 'Failed to parse ONNX model';
+
+      if (error.response?.status === 400) {
+        errorMessage = `Invalid model format: ${error.response.data?.detail || 'Unknown error'}`;
+      } else if (error.response?.status === 413) {
+        errorMessage = 'Model file too large (>10MB)';
+      } else if (error.message?.includes('nodes')) {
+        errorMessage = error.message; // Наша кастомная ошибка валидации
+      } else if (!error.response) {
+        errorMessage = 'Network error: Cannot connect to server';
+      }
+
+      message.error(errorMessage);
+
+      // === ОЧИСТКА СОСТОЯНИЯ ПРИ ОШИБКЕ ===
+      setOnnxData(null);
+      setGraphPath(null);
+
+    } finally {
+      setParsing(false);
     }
   };
 
@@ -4985,7 +5093,7 @@ const Compiler: React.FC = () => {
     setModelFile(file);
     const url = URL.createObjectURL(file);
     setGraphPath(url);
-    await parseOnnxModel(file); // ← Парсим после загрузки
+    await parseOnnxModel(file); // Парсим немедленно после загрузки
   };
 
   const handleQuantize = async () => {
@@ -4995,7 +5103,6 @@ const Compiler: React.FC = () => {
     }
 
     setQuantizing(true);
-
     const formData = new FormData();
     formData.append('file', modelFile);
     formData.append('quant_type', quantType);
@@ -5050,16 +5157,17 @@ const Compiler: React.FC = () => {
             </p>
             <p>Click or drag ONNX file to this area</p>
           </Dragger>
+          {parsing && <div style={{ marginTop: 16 }}>Parsing model...</div>}
         </Card>
       ),
     },
     {
       key: 'graph',
       label: 'Graph View',
-      disabled: !graphPath,
+      disabled: !graphPath || parsing,
       children: graphPath && (
         <Card title="Model Visualization">
-          <OnnxGraph modelPath={graphPath} onnxData={onnxData} /> {/* ← Передаем данные */}
+          <OnnxGraph modelPath={graphPath} onnxData={onnxData} />
         </Card>
       ),
     },
@@ -5453,7 +5561,7 @@ export default Login;
 ============================================================
 FILE: frontend\src\services\api.ts
 ============================================================
-import axios from 'axios';
+import axios, { AxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
 
 const api = axios.create({
   baseURL: 'http://localhost:8000/api',
@@ -5462,23 +5570,69 @@ const api = axios.create({
   },
 });
 
-api.interceptors.request.use((config) => {
+// === ЛОГИРОВАНИЕ ЗАПРОСОВ ===
+api.interceptors.request.use((config: AxiosRequestConfig) => {
   const token = localStorage.getItem('access_token');
-  console.log('🔑 Token sent:', token?.substring(0, 20) + '...'); // Лог токена
+
+  // Логируем исходящие запросы в режиме разработки
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`📤 ${config.method?.toUpperCase()} ${config.url}`, {
+      hasToken: !!token,
+      dataType: config.data instanceof FormData ? 'FormData' : typeof config.data,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   if (token && config.headers) {
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
 });
 
-// frontend/src/services/api.ts
+// === ЛОГИРОВАНИЕ ОТВЕТОВ и ОШИБОК ===
 api.interceptors.response.use(
-  response => response,
-  error => {
+  (response: AxiosResponse) => {
+    const { method, url } = response.config;
+    const data = response.data;
+
+    // Детальное логирование для ONNX-запросов
+    if (url?.includes('/parse-onnx') && data) {
+      console.group('🟢 ONNX API Response');
+      console.log('Status:', response.status);
+      console.log('Nodes:', data.nodes?.length || 0);
+      console.log('Edges:', data.edges?.length || 0);
+      console.log('Weights:', data.weights ? Object.keys(data.weights).length : 0);
+      console.log('Model metadata:', data.model_metadata);
+      console.groupEnd();
+    }
+
+    // Общее логирование в dev режиме
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`✅ ${method?.toUpperCase()} ${url}`, {
+        status: response.status,
+        dataSize: JSON.stringify(data).length,
+        hasData: !!data,
+      });
+    }
+
+    return response;
+  },
+  (error: AxiosError) => {
+    // === ЛОГИРОВАНИЕ ОШИБОК ===
+    const { method, url } = error.config || {};
+    console.error(`🔴 API Error: ${method?.toUpperCase()} ${url}`, {
+      status: error.response?.status,
+      message: error.message,
+      data: error.response?.data,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Обработка 401 Unauthorized
     if (error.response?.status === 401) {
       localStorage.removeItem('access_token');
       window.location.href = '/login';
     }
+
     return Promise.reject(error);
   }
 );
