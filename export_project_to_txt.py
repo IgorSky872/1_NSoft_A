@@ -12,7 +12,7 @@ EXCLUDE_FOLDERS = {
 }
 
 # Расширения файлов, которые НАДО ВКЛЮЧИТЬ
-INCLUDE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".md"}
+INCLUDE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".css"}
 
 
 def is_valid_file(file_path: Path) -> bool:

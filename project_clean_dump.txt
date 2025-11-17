@@ -166,6 +166,9 @@ async def quantize_model(
         # Очистка: удаляем оригинальный файл после квантизации
         if os.path.exists(original_path):
             os.remove(original_path)
+        # Очистка: удаляем квантизованный файлы после квантизации
+        #if os.path.exists(quantized_path):
+        #    os.remove(quantized_path)
 
 @router.post("/compile")
 async def compile_firmware(device_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
@@ -351,13 +354,16 @@ FILE: backend\app\api\onnx_router.py
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from app.services.onnx_parser import parse_onnx_model
 from app.models.onnx_models import ParsedOnnxResponse
-from app.auth.utils import verify_token_dep as verify_token
+from app.auth.dependencies import get_current_user
 import io
 
 router = APIRouter()
 
 @router.post("/parse-onnx", response_model=ParsedOnnxResponse)
-async def parse_onnx(file: UploadFile = File(...), token: dict = Depends(verify_token)):
+async def parse_onnx(
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user)
+):
     try:
         content = await file.read()
         model_stream = io.BytesIO(content)
@@ -432,11 +438,7 @@ from app.auth.utils import verify_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
-
 async def get_current_user(token: str = Depends(oauth2_scheme)):
-    """
-    Зависимость для получения текущего пользователя из JWT токена
-    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -547,17 +549,6 @@ def verify_token(token: str) -> Optional[dict]:
         return payload
     except JWTError:
         return None
-
-def verify_token_dep(token: str = Depends(oauth2_scheme)):
-    """Версия для использования как Depends в роутерах"""
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-        return payload
-    except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
@@ -4174,6 +4165,150 @@ export default defineConfig({
 })
 
 ============================================================
+FILE: frontend\src\App.css
+============================================================
+/* Основные стили приложения */
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+.main-content {
+  flex: 1;
+  margin-left: 250px;
+  padding: 24px;
+  overflow-y: auto;
+  background: #f0f2f5;
+  transition: margin-left 0.3s;
+}
+
+/* Стили Sidebar */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 250px;
+  position: fixed;
+  left: 0;
+  top: 0;
+  background: #001529;
+  transition: width 0.3s;
+  z-index: 100;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.15);
+}
+
+.sidebar.closed {
+  width: 0;
+  overflow: hidden;
+}
+
+.sidebar-menu {
+  flex: 1;
+  overflow-y: auto;
+  padding-top: 16px;
+}
+
+.sidebar-menu ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.sidebar-menu li {
+  margin: 4px 0;
+}
+
+.sidebar-menu a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  color: #aaa;
+  text-decoration: none;
+  transition: all 0.3s;
+  font-size: 14px;
+}
+
+.sidebar-menu a:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.sidebar-menu a.active {
+  color: #fff;
+  background: #1890ff;
+  border-right: 3px solid #096dd9;
+}
+
+.sidebar-menu a.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
+/* Нижняя часть Sidebar */
+.sidebar-footer {
+  padding: 16px;
+  border-top: 1px solid #333;
+  background: #000c17;
+}
+
+.user-info {
+  margin-bottom: 12px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+.user-info .username {
+  color: #fff;
+  font-weight: 500;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.user-info .role {
+  color: #aaa;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.session-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #aaa;
+  font-size: 11px;
+  margin-bottom: 12px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+}
+
+.logout-button {
+  color: #ff4d4f !important;
+  transition: all 0.3s;
+  font-weight: 500;
+}
+
+.logout-button:hover {
+  background: rgba(255, 77, 79, 0.1) !important;
+  color: #ff7875 !important;
+}
+
+/* Адаптивность */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 100%;
+  }
+
+  .main-content {
+    margin-left: 0;
+    padding: 16px;
+  }
+}
+
+============================================================
 FILE: frontend\src\App.tsx
 ============================================================
 import React from 'react';
@@ -4256,6 +4391,79 @@ function App() {
 export default App;
 
 ============================================================
+FILE: frontend\src\index.css
+============================================================
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #242424;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  font-weight: 500;
+  color: #646cff;
+  text-decoration: inherit;
+}
+a:hover {
+  color: #535bf2;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  place-items: center;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+h1 {
+  font-size: 3.2em;
+  line-height: 1.1;
+}
+
+button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: #1a1a1a;
+  cursor: pointer;
+  transition: border-color 0.25s;
+}
+button:hover {
+  border-color: #646cff;
+}
+button:focus,
+button:focus-visible {
+  outline: 4px auto -webkit-focus-ring-color;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color: #213547;
+    background-color: #ffffff;
+  }
+  a:hover {
+    color: #747bff;
+  }
+  button {
+    background-color: #f9f9f9;
+  }
+}
+
+
+============================================================
 FILE: frontend\src\main.tsx
 ============================================================
 import React from 'react'
@@ -4309,75 +4517,6 @@ const btnStyle: React.CSSProperties = {
 };
 
 export default InferenceToolbar;
-
-============================================================
-FILE: frontend\src\components\LoginForm.tsx
-============================================================
-import React, { useState } from 'react';
-import api from '../services/api';
-import axios from 'axios';
-
-const LoginForm: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    try {
-      const res = await api.post('/api/login', new URLSearchParams({ username, password }), {
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-      });
-      localStorage.setItem('token', res.data.access_token);
-      onLogin();
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Login failed');
-    }
-  };
-
-  return (
-    <div style={{
-      display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh',
-      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
-    }}>
-      <div style={{
-        background: 'white', padding: '40px', borderRadius: '10px', boxShadow: '0 10px 30px rgba(0,0,0,0.3)',
-        width: '400px', textAlign: 'center'
-      }}>
-        <h1 style={{ marginBottom: '20px', color: '#333' }}>Neuro App Login</h1>
-        <form onSubmit={handleSubmit}>
-          <input
-            type="text"
-            placeholder="Username"
-            value={username}
-            onChange={e => setUsername(e.target.value)}
-            style={{ width: '100%', padding: '12px', margin: '10px 0', borderRadius: '5px', border: '1px solid #ccc' }}
-            required
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            style={{ width: '100%', padding: '12px', margin: '10px 0', borderRadius: '5px', border: '1px solid #ccc' }}
-            required
-          />
-          <button type="submit" style={{
-            width: '100%', padding: '12px', background: '#667eea', color: 'white',
-            border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '16px'
-          }}>
-            Login
-          </button>
-        </form>
-        {error && <p style={{ color: 'red', marginTop: '10px' }}>{error}</p>}
-        <p style={{ marginTop: '20px', color: '#666' }}>Demo: test / test</p>
-      </div>
-    </div>
-  );
-};
-
-export default LoginForm;
 
 ============================================================
 FILE: frontend\src\components\OnnxGraph.tsx
@@ -4571,9 +4710,12 @@ export default OnnxGraph;
 ============================================================
 FILE: frontend\src\components\Sidebar.tsx
 ============================================================
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { useWorkflow } from '../context/WorkflowContext';
+import { Button, Modal, message, Spin } from 'antd';
+import { LogoutOutlined, ClockCircleOutlined } from '@ant-design/icons';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -4581,7 +4723,24 @@ interface SidebarProps {
 
 const Sidebar: React.FC<SidebarProps> = ({ isOpen }) => {
   const { selectedDevice, currentStep } = useWorkflow();
+  const { logout, user } = useAuth();
   const location = useLocation();
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [sessionTime, setSessionTime] = useState('');
+
+  // Обновляем время сессии каждую секунду
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (user?.loginTime) {
+        const elapsed = Math.floor((Date.now() - user.loginTime) / 1000);
+        const minutes = Math.floor(elapsed / 60);
+        const seconds = elapsed % 60;
+        setSessionTime(`${minutes}:${seconds.toString().padStart(2, '0')}`);
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [user]);
 
   const menuItems = [
     { path: '/', label: 'Dashboard', icon: '🏠', step: 'dashboard' },
@@ -4595,26 +4754,77 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen }) => {
     return steps.indexOf(step) <= steps.indexOf(currentStep);
   };
 
-  return (
-    <div className={`sidebar ${isOpen ? 'open' : 'closed'}`}>
-      <ul>
-        {menuItems.map(item => {
-          const enabled = isStepEnabled(item.step);
-          const isActive = location.pathname === item.path;
+  const handleLogout = () => {
+    Modal.confirm({
+      title: 'Confirm logout',
+      content: 'Are you sure you want to log out? All unsaved progress will be lost.',
+      okText: 'Logout',
+      cancelText: 'Cancel',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setLoggingOut(true);
+        // Имитация корректного завершения сессии
+        await new Promise(resolve => setTimeout(resolve, 500));
+        logout();
+        message.success('You have been logged out successfully');
+        setLoggingOut(false);
+      },
+    });
+  };
 
-          return (
-            <li key={item.path}>
-              <Link
-                to={enabled ? item.path : '#'}
-                className={`${isActive ? 'active' : ''} ${!enabled ? 'disabled' : ''}`}
-              >
-                <span>{item.icon}</span>
-                {item.label}
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
+  if (!isOpen) return null;
+
+  return (
+    <div className="sidebar">
+      <Spin spinning={loggingOut} tip="Logging out...">
+        {/* Верхняя часть с меню */}
+        <div className="sidebar-menu">
+          <ul>
+            {menuItems.map(item => {
+              const enabled = isStepEnabled(item.step);
+              const isActive = location.pathname === item.path;
+
+              return (
+                <li key={item.path}>
+                  <Link
+                    to={enabled ? item.path : '#'}
+                    className={`${isActive ? 'active' : ''} ${!enabled ? 'disabled' : ''}`}
+                  >
+                    <span>{item.icon}</span>
+                    {item.label}
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        {/* Нижняя часть с пользователем и информацией о сессии */}
+        <div className="sidebar-footer">
+          <div className="user-info">
+            <div className="username">{user?.username || 'Guest'}</div>
+            <div className="role">{user?.role || 'user'}</div>
+          </div>
+
+          {user?.loginTime && (
+            <div className="session-info">
+              <ClockCircleOutlined />
+              <span>Session: {sessionTime}</span>
+            </div>
+          )}
+
+          <Button
+            type="text"
+            danger
+            onClick={handleLogout}
+            block
+            className="logout-button"
+            icon={<LogoutOutlined />}
+          >
+            Logout
+          </Button>
+        </div>
+      </Spin>
     </div>
   );
 };
@@ -4876,7 +5086,7 @@ export default SidebarContent;
 FILE: frontend\src\context\AuthContext.tsx
 ============================================================
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import type { User, TokenResponse } from '../types';  // ← Импорт типов
+import type { User, TokenResponse } from '../types';
 import api from '../services/api';
 
 interface AuthContextType {
@@ -4898,10 +5108,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const token = localStorage.getItem('access_token');
       if (token) {
         try {
-          const response = await api.get<User>('/auth/me');  // ← Указали тип
-          setUser(response.data);
+          const response = await api.get<User>('/auth/me');
+          // Добавляем время входа при загрузке из localStorage
+          setUser({
+            ...response.data,
+            loginTime: Number(localStorage.getItem('loginTime')) || Date.now()
+          });
         } catch (error) {
           localStorage.removeItem('access_token');
+          localStorage.removeItem('loginTime');
+          setUser(null);
         }
       }
     };
@@ -4922,8 +5138,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const { access_token } = response.data;
       localStorage.setItem('access_token', access_token);
 
+      // Сохраняем время входа
+      const loginTime = Date.now();
+      localStorage.setItem('loginTime', loginTime.toString());
+
       const userResponse = await api.get<User>('/auth/me');
-      setUser(userResponse.data);
+      setUser({
+        ...userResponse.data,
+        loginTime
+      });
     } catch (error) {
       console.error('Login failed:', error);
       throw error;
@@ -4934,10 +5157,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = () => {
     localStorage.removeItem('access_token');
+    localStorage.removeItem('loginTime');
     setUser(null);
   };
 
-  return <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, logout, loading }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, logout, loading }}>
+      {children}
+    </AuthContext.Provider>
+  );
 };
 
 export const useAuth = () => {
@@ -5482,10 +5710,14 @@ export default Inference;
 ============================================================
 FILE: frontend\src\pages\Login.tsx
 ============================================================
+// frontend/src/pages/Login.tsx
 import React, { useState } from 'react';
-import { Card, Form, Input, Button, Alert, Spin } from 'antd';
+import { Card, Form, Input, Button, Alert, Spin, Typography } from 'antd';
+import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
+
+const { Title } = Typography;
 
 const Login: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -5493,15 +5725,15 @@ const Login: React.FC = () => {
   const { login } = useAuth();
   const navigate = useNavigate();
 
-  const onFinish = async (values: any) => {
+  const onFinish = async (values: { username: string; password: string }) => {
     setLoading(true);
     setError(null);
 
     try {
       await login(values.username, values.password);
-      navigate('/'); // Переход на Dashboard после успешного входа
-    } catch (err) {
-      setError('Invalid username or password');
+      navigate('/', { replace: true }); // replace: true - чтобы нельзя было вернуться назад
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Invalid credentials or server error');
     } finally {
       setLoading(false);
     }
@@ -5512,44 +5744,89 @@ const Login: React.FC = () => {
       display: 'flex',
       justifyContent: 'center',
       alignItems: 'center',
-      height: '100vh',
-      background: '#f0f2f5'
+      minHeight: '100vh',
+      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      padding: 24,
     }}>
-      <Card title="NSoft AI Compiler Login" style={{ width: 400 }}>
-        <Form
-          name="login"
-          onFinish={onFinish}
-          layout="vertical"
-        >
-          <Form.Item
-            name="username"
-            label="Username"
-            rules={[{ required: true, message: 'Please input your username!' }]}
+      <Card
+        style={{
+          width: '100%',
+          maxWidth: 420,
+          boxShadow: '0 10px 40px rgba(0, 0, 0, 0.2)',
+          borderRadius: 12,
+        }}
+        headStyle={{
+          textAlign: 'center',
+          borderBottom: 'none',
+          paddingTop: 32,
+        }}
+      >
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <Title level={3} style={{ margin: 0, color: '#1890ff' }}>
+            NSoft AI Compiler
+          </Title>
+          <p style={{ color: '#666', marginTop: 8 }}>Sign in to continue</p>
+        </div>
+
+        {error && (
+          <Alert
+            message={error}
+            type="error"
+            showIcon
+            style={{ marginBottom: 24 }}
+            closable
+            onClose={() => setError(null)}
+          />
+        )}
+
+        <Spin spinning={loading}>
+          <Form
+            name="login"
+            onFinish={onFinish}
+            layout="vertical"
+            size="large"
+            initialValues={{ username: 'admin' }}
           >
-            <Input placeholder="admin" />
-          </Form.Item>
+            <Form.Item
+              name="username"
+              rules={[
+                { required: true, message: 'Please input your username!' },
+                { min: 3, message: 'Username must be at least 3 characters' }
+              ]}
+            >
+              <Input
+                prefix={<UserOutlined style={{ color: '#ccc' }} />}
+                placeholder="Username"
+                autoComplete="username"
+              />
+            </Form.Item>
 
-          <Form.Item
-            name="password"
-            label="Password"
-            rules={[{ required: true, message: 'Please input your password!' }]}
-          >
-            <Input.Password placeholder="secret" />
-          </Form.Item>
+            <Form.Item
+              name="password"
+              rules={[
+                { required: true, message: 'Please input your password!' },
+                { min: 5, message: 'Password must be at least 5 characters' }
+              ]}
+            >
+              <Input.Password
+                prefix={<LockOutlined style={{ color: '#ccc' }} />}
+                placeholder="Password"
+                autoComplete="current-password"
+              />
+            </Form.Item>
 
-          {error && (
-            <Alert message={error} type="error" showIcon style={{ marginBottom: 16 }} />
-          )}
+            <Form.Item style={{ marginBottom: 16 }}>
+              <Button type="primary" htmlType="submit" block>
+                Log In
+              </Button>
+            </Form.Item>
+          </Form>
+        </Spin>
 
-          <Form.Item>
-            <Button type="primary" htmlType="submit" loading={loading} block>
-              Log In
-            </Button>
-          </Form.Item>
-        </Form>
-
-        <div style={{ marginTop: 16, textAlign: 'center', color: '#666' }}>
-          <small>Default: admin / secret</small>
+        <div style={{ textAlign: 'center', marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
+          <small style={{ color: '#999' }}>
+            Default: <strong>admin</strong> / <strong>secret</strong>
+          </small>
         </div>
       </Card>
     </div>
@@ -5561,7 +5838,8 @@ export default Login;
 ============================================================
 FILE: frontend\src\services\api.ts
 ============================================================
-import axios, { AxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
+import axios, { AxiosError } from 'axios';
+import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 
 const api = axios.create({
   baseURL: 'http://localhost:8000/api',
@@ -5648,6 +5926,7 @@ FILE: frontend\src\types\index.ts
 export interface User {
   username: string;
   role?: string;
+  loginTime?: number;
 }
 
 export interface TokenResponse {
