@@ -25,12 +25,12 @@ export interface DeviceMemristor {
 
 export interface Device {
   id: string;
-  status: 'idle' | 'busy' | 'error';
+  status: string;
   version: string;
-  cores?: DeviceCore[];
-  memristors?: DeviceMemristor[];
-  diagnostics?: DeviceDiagnostics;
   is_mock: boolean;
+  diagnostics?: DeviceDiagnostics;
+  memristors?: Memristor[];
+  cores?: Core[];
 }
 
 export interface DeviceDiagnostics {

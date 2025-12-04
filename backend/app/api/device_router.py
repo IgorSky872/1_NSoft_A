@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.models.device_models import Device
+from app.models.workflow_models import DeviceWorkflowStatus
 from app.database import get_db
 from app.auth.dependencies import get_current_user  # ИЗМЕНЕНО
 import uuid
@@ -52,4 +53,54 @@ async def get_device(device_id: str, db: Session = Depends(get_db), user=Depends
         "version": device.version,
         "is_mock": device.is_mock,
         "diagnostics": device.diagnostics
+    }
+
+
+@router.delete("/devices/{device_id}")
+async def delete_device(
+        device_id: str,
+        db: Session = Depends(get_db),
+        user=Depends(get_current_user)
+):
+    """Delete a device by ID"""
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if not device:
+        raise HTTPException(404, "Device not found")
+
+    # Удаляем связанные workflow статусы
+    workflows = db.query(DeviceWorkflowStatus).filter(
+        DeviceWorkflowStatus.device_id == device_id
+    ).all()
+
+    for workflow in workflows:
+        db.delete(workflow)
+
+    # Удаляем само устройство
+    db.delete(device)
+    db.commit()
+
+    return {"message": "Device deleted successfully"}
+
+
+@router.get("/devices/{device_id}/details")
+async def get_device_details(
+        device_id: str,
+        db: Session = Depends(get_db),
+        user=Depends(get_current_user)
+):
+    """Get detailed information about a specific device"""
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if not device:
+        raise HTTPException(404, "Device not found")
+
+    return {
+        "id": device.id,
+        "status": device.status,
+        "version": device.version,
+        "is_mock": device.is_mock,
+        "diagnostics": device.diagnostics,
+        "memristors": device.memristors,
+        "cores": device.cores,
+        "created_at": device.created_at if hasattr(device, 'created_at') else None,
+        "updated_at": device.updated_at if hasattr(device, 'updated_at') else None
     }

@@ -1,3 +1,10 @@
+@import './styles/dashboard-antd-fixes.css';
+
+/* Критично: Устанавливаем box-sizing для всех элементов */
+* {
+  box-sizing: border-box !important;
+}
+
 /* Основные стили приложения */
 .app {
   display: flex;
@@ -138,6 +145,7 @@
     padding: 16px;
   }
 }
+
 /* Критичные стили для предотвращения расширения страницы при загрузке графа ONNX */
 
 /* Основной контейнер страницы Compiler */

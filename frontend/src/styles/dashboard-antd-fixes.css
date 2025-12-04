@@ -1,0 +1,404 @@
+/* Исправления для Dashboard с Ant Design */
+
+/* === КРИТИЧЕСКИЙ ФИКС: Главный контейнер === */
+.dashboard-wrapper {
+  display: flex !important;
+  width: 100vw !important;
+  max-width: calc(100vw - 300px)!important;
+  overflow-x: hidden !important;
+  height: 100vh !important;
+}
+
+/* Основная область устройств - КЛЮЧЕВОЙ ФИКС */
+.devices-main-area {
+  flex: 1 1 0% !important; /* flex: 1 с min-width: 0 эффектом */
+  min-width: 0 !important; /* КРИТИЧНО: позволяет flex-элементу сжиматься */
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  background: white !important;
+  padding: 24px !important;
+  height: 100vh !important;
+  box-sizing: border-box !important;
+}
+
+/* Вариант с компактной шириной при открытой панели */
+.devices-main-area.compact {
+  flex: 1 1 0% !important; /* Просто занимает доступное место */
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+
+/* Заголовок фиксированной высоты */
+.dashboard-header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  margin-bottom: 24px !important;
+  flex-shrink: 0 !important; /* Не сжиматься */
+  min-height: 48px !important;
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+/* Заголовок с переносом текста */
+.dashboard-title {
+  margin: 0 !important;
+  font-size: 28px !important;
+  font-weight: 600 !important;
+  color: #262626 !important;
+  word-wrap: break-word !important;
+  overflow-wrap: break-word !important;
+  max-width: 60% !important; /* Ограничиваем ширину */
+}
+
+/* Кнопка создания устройства - всегда видима */
+.create-device-btn {
+  flex-shrink: 0 !important; /* Не сжиматься */
+  white-space: nowrap !important;
+  margin-left: 16px !important;
+}
+
+/* Сетка устройств */
+.devices-grid-fix {
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+}
+
+/* Карточки устройств */
+.device-card {
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+/* Заголовок карточки с flex */
+.device-card-header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  width: 100% !important;
+}
+
+/* ID устройства с обрезкой */
+.device-id {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  max-width: calc(100% - 40px) !important; /* Оставляем место для кнопки */
+}
+
+/* Правая панель свойств */
+.properties-panel-fix {
+  flex: 0 0 400px !important;
+  min-width: 0 !important; /* Позволяет сжиматься при необходимости */
+  max-width: 400px !important;
+  background: #fafafa !important;
+  border-left: 1px solid #e8e8e8 !important;
+  height: 100vh !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  box-sizing: border-box !important;
+}
+
+/* Контент панели свойств */
+.properties-content-fix {
+  padding: 24px !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+}
+
+/* Адаптивность - критичный момент */
+@media (max-width: 768px) {
+  .devices-main-area {
+    padding: 16px !important;
+  }
+
+  .devices-main-area.compact {
+    flex: 1 1 100% !important; /* На мобильных панель на весь экран */
+    min-width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  .dashboard-title {
+    font-size: 24px !important;
+    max-width: 50% !important;
+  }
+
+  .dashboard-header {
+    flex-wrap: wrap !important;
+  }
+
+  .properties-panel-fix {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 100% !important;
+    z-index: 1000 !important;
+  }
+}
+
+/* Убираем возможность горизонтальной прокрутки на всех уровнях */
+.no-x-scroll {
+  overflow-x: hidden !important;
+}
+
+/* Фикс для Ant List grid */
+.ant-list-grid .ant-row {
+  margin-left: -8px !important;
+  margin-right: -8px !important;
+}
+
+.ant-list-grid .ant-col {
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+}
+
+/* Убираем горизонтальный скролл у List */
+.ant-list-items {
+  overflow-x: hidden !important;
+  width: 100% !important;
+}
+
+/* Остальные стили без изменений */
+html, body {
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow-x: hidden !important;
+}
+
+.ant-layout {
+  background-color: #f5f5f5 !important;
+  min-height: 100vh !important;
+}
+
+.ant-layout-content {
+  padding: 0 !important;
+  margin: 0 !important;
+  background-color: #f5f5f5 !important;
+  min-height: 100vh !important;
+}
+
+.devices-container {
+  width: 100% !important;
+  height: 100vh !important;
+  overflow: hidden !important;
+  background-color: white !important;
+  display: flex !important;
+  flex-direction: row !important;
+}
+
+.device-card .ant-card-head {
+  padding: 0 16px !important;
+  background: #fafafa !important;
+  border-bottom: 1px solid #f0f0f0 !important;
+  min-height: 48px !important;
+}
+
+.device-card .ant-card-head-title {
+  padding: 12px 0 !important;
+  font-weight: 500 !important;
+  color: #262626 !important;
+}
+
+.device-card .ant-card-body {
+  padding: 16px !important;
+  height: calc(100% - 48px) !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.device-card .ant-card-actions {
+  margin-top: auto !important;
+  border-top: 1px solid #f0f0f0 !important;
+  background: white !important;
+}
+
+.device-card .ant-card-actions > li {
+  padding: 12px 0 !important;
+}
+
+.device-card .ant-card-actions .ant-btn {
+  width: 100% !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  color: #666 !important;
+  font-weight: 500 !important;
+  transition: all 0.3s ease !important;
+}
+
+.device-card .ant-card-actions .ant-btn-primary {
+  color: #1890ff !important;
+  background: #f0f5ff !important;
+  font-weight: 600 !important;
+}
+
+.device-card .ant-card-actions .ant-btn:hover {
+  color: #1890ff !important;
+  background: #f0f5ff !important;
+}
+
+.device-card .ant-descriptions {
+  margin: 0 !important;
+}
+
+.device-card .ant-descriptions-item {
+  padding-bottom: 8px !important;
+}
+
+.device-card .ant-descriptions-item:last-child {
+  padding-bottom: 0 !important;
+}
+
+.device-card .ant-descriptions-item-label {
+  color: #666 !important;
+  font-weight: 500 !important;
+  width: 40% !important;
+}
+
+.device-card .ant-descriptions-item-content {
+  color: #262626 !important;
+  font-weight: 500 !important;
+  width: 60% !important;
+}
+
+.device-card .ant-tag {
+  margin: 0 !important;
+  border-radius: 4px !important;
+  font-weight: 500 !important;
+}
+
+.delete-device-btn {
+  color: #ff4d4f !important;
+  background: transparent !important;
+  border: none !important;
+  padding: 4px 8px !important;
+  border-radius: 4px !important;
+  transition: all 0.3s ease !important;
+}
+
+.delete-device-btn:hover {
+  color: #ff7875 !important;
+  background: #fff1f0 !important;
+}
+
+.empty-state-fix {
+  text-align: center !important;
+  padding: 60px 20px !important;
+  color: #999 !important;
+  width: 100% !important;
+}
+
+.empty-devices-icon {
+  font-size: 48px !important;
+  margin-bottom: 16px !important;
+  color: #d9d9d9 !important;
+}
+
+.properties-panel-fix .ant-card {
+  margin-bottom: 16px !important;
+  border: 1px solid #e8e8e8 !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
+}
+
+.properties-panel-fix .ant-card-head {
+  background: white !important;
+  border-bottom: 1px solid #f0f0f0 !important;
+  padding: 12px 16px !important;
+  font-weight: 500 !important;
+  color: #262626 !important;
+}
+
+.properties-panel-fix .ant-card-body {
+  padding: 16px !important;
+}
+
+.properties-panel-fix .ant-list {
+  margin: 0 !important;
+}
+
+.properties-panel-fix .ant-list-item {
+  padding: 8px 0 !important;
+  border-bottom: 1px solid #f0f0f0 !important;
+}
+
+.properties-panel-fix .ant-list-item:last-child {
+  border-bottom: none !important;
+}
+
+.properties-panel-fix .ant-btn {
+  width: 100% !important;
+  margin: 4px 0 !important;
+  border-radius: 6px !important;
+  font-weight: 500 !important;
+}
+
+.ant-spin-nested-loading {
+  width: 100% !important;
+}
+
+.ant-spin-container {
+  width: 100% !important;
+}
+
+/* Утилиты для скрытия скроллов */
+.no-scroll {
+  overflow: hidden !important;
+}
+
+.no-x-scroll {
+  overflow-x: hidden !important;
+}
+
+.no-y-scroll {
+  overflow-y: hidden !important;
+}
+
+/* Фикс для белых полос */
+.white-strip-fix {
+  background-color: #f5f5f5 !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Фикс для flex контейнеров */
+.flex-container-fix {
+  display: flex !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.flex-item-fix {
+  flex: 1 !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Анимации */
+.fade-in {
+  animation: fadeIn 0.3s ease !important;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0 !important; }
+  to { opacity: 1 !important; }
+}
+
+/* Утилиты для отладки (удалить в продакшене) */
+.debug-border {
+  border: 1px solid red !important;
+}
+
+.debug-bg {
+  background-color: rgba(255, 0, 0, 0.1) !important;
+}
