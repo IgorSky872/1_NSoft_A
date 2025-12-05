@@ -1,11 +1,10 @@
-// frontend/src/pages/Dashboard.tsx
-
 import React, { useEffect, useState } from 'react';
 import { Card, List, Button, Tag, Spin, Space, message, Row, Col, Divider, Descriptions, Badge, Modal } from 'antd';
-import { useWorkflow } from '../context/WorkflowContext';
-import api from '../services/api';
-import type { Device } from '../types';
+import { useWorkflow } from '../../context/WorkflowContext';
+import api from '../../services/api';
+import type { Device } from '../../types';
 import { DeleteOutlined, InfoCircleOutlined, CloseOutlined } from '@ant-design/icons';
+import './Dashboard.css';
 
 const Dashboard: React.FC = () => {
   const [devices, setDevices] = useState<Device[]>([]);

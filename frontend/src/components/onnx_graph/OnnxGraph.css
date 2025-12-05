@@ -1,0 +1,86 @@
+/* Контейнер графика ONNX */
+.onnx-graph-container {
+  max-width: 100% !important;
+  overflow: hidden !important;
+  position: relative;
+  width: 100%;
+}
+
+/* Контейнер Cytoscape */
+.cytoscape-container {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 600px !important;
+  overflow: hidden !important;
+  position: relative;
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  background: #fafafa;
+  min-width: 0 !important;
+}
+
+/* Карточка Ant Design с графиком */
+.graph-card {
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+.graph-card .ant-card-body {
+  max-width: 100% !important;
+  overflow: hidden !important;
+  padding: 16px !important;
+  position: relative;
+}
+
+/* Стили для предотвращения масштабирования */
+.cytoscape-container canvas {
+  max-width: 100% !important;
+  max-height: 100% !important;
+}
+
+/* Принудительное ограничение размеров графика */
+.graph-wrapper {
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+  position: relative;
+}
+
+/* Стили для предотвращения увеличения при загрузке */
+.loading-graph {
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+/* === МЕДИА-ЗАПРОСЫ ДЛЯ ГРАФА === */
+@media (max-width: 768px) {
+  .cytoscape-container {
+    height: 400px !important;
+  }
+
+  .ant-card-body {
+    padding: 12px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .cytoscape-container {
+    height: 300px !important;
+  }
+}
+
+/* === БРАУЗЕРНЫЕ ФИКСЫ ТОЛЬКО ДЛЯ ГРАФА === */
+@-moz-document url-prefix() {
+  .cytoscape-container {
+    overflow: hidden !important;
+  }
+}
+
+_:-ms-lang(x), .cytoscape-container {
+  overflow: hidden !important;
+}
+
+_::-webkit-full-page-media, _:future, :root .cytoscape-container {
+  overflow: hidden !important;
+}

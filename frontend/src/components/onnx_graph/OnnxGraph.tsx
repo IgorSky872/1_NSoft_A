@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import Cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import { Tabs, message } from 'antd';
-import type { OnnxData, OnnxNode, OnnxEdge } from '../types';
+import type { OnnxData, OnnxNode, OnnxEdge } from '../../types';
+import './OnnxGraph.css';
 
 Cytoscape.use(dagre);
 

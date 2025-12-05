@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-import { useWorkflow } from '../context/WorkflowContext';
+import { useAuth } from '../../context/AuthContext';
+import { useWorkflow } from '../../context/WorkflowContext';
 import { Button, Modal, message, Spin } from 'antd';
 import { LogoutOutlined, ClockCircleOutlined } from '@ant-design/icons';
+import './Sidebar.css';
 
 interface SidebarProps {
   isOpen: boolean;

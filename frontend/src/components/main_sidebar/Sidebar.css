@@ -1,0 +1,122 @@
+/* Базовые стили компонента */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 20vh;
+  /*width: 250px;*/
+  position: fixed;
+  left: 0;
+  top: 0;
+  background: #001529;
+  transition: width 0.3s;
+  z-index: 100;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.15);
+}
+
+.sidebar.closed {
+  width: 0;
+  overflow: hidden;
+}
+
+/* Меню */
+.sidebar-menu {
+  flex: 1;
+  overflow-y: auto;
+  padding-top: 16px;
+}
+
+.sidebar-menu ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.sidebar-menu li {
+  margin: 4px 0;
+}
+
+.sidebar-menu a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  color: #aaa;
+  text-decoration: none;
+  transition: all 0.3s;
+  font-size: 14px;
+}
+
+.sidebar-menu a:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.sidebar-menu a.active {
+  color: #fff;
+  background: #1890ff;
+  border-right: 3px solid #096dd9;
+}
+
+.sidebar-menu a.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
+/* Футер */
+.sidebar-footer {
+  padding: 16px;
+  border-top: 1px solid #333;
+  background: #000c17;
+}
+
+.user-info {
+  margin-bottom: 12px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+.user-info .username {
+  color: #fff;
+  font-weight: 500;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.user-info .role {
+  color: #aaa;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.session-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #aaa;
+  font-size: 11px;
+  margin-bottom: 12px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+}
+
+.logout-button {
+  color: #ff4d4f !important;
+  transition: all 0.3s;
+  font-weight: 500;
+}
+
+.logout-button:hover {
+  background: rgba(255, 77, 79, 0.1) !important;
+  color: #ff7875 !important;
+}
+
+/* Адаптивность */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 100%;
+  }
+}

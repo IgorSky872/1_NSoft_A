@@ -3,7 +3,7 @@ import { Card, Upload, Button, Tabs, Table, Image, Space, Alert, message } from 
 import { UploadOutlined, PlayCircleOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useWorkflow } from '../context/WorkflowContext';
 import api from '../services/api';
-import OnnxGraph from '../components/OnnxGraph';
+import OnnxGraph from '../components/onnx_graph/OnnxGraph';
 
 const { TabPane } = Tabs;
 

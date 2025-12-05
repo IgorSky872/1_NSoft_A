@@ -3,8 +3,10 @@
 /* === КРИТИЧЕСКИЙ ФИКС: Главный контейнер === */
 .dashboard-wrapper {
   display: flex !important;
+  /*width: calc(100vw - 300px)!important;
+  max-width: calc(100vw - 300px)!important;*/
   width: 100vw !important;
-  max-width: calc(100vw - 300px)!important;
+  max-width: 85vw !important;
   overflow-x: hidden !important;
   height: 100vh !important;
 }

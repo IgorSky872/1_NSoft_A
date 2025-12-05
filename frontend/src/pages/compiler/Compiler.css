@@ -1,0 +1,70 @@
+/* === КРИТИЧНО: Скрытие полос прокрутки для всей страницы === */
+.compiler-container::-webkit-scrollbar {
+  display: none;
+}
+
+.compiler-container {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Основной контейнер страницы Compiler */
+.compiler-container {
+  max-width: 100vw !important;
+  overflow-x: hidden !important;
+  position: relative;
+}
+
+/* Контейнер вкладок */
+.compiler-tabs {
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+/* Заголовок страницы */
+.compiler-title {
+  max-width: 100%;
+  word-wrap: break-word;
+}
+
+/* Контейнер для кнопок и элементов управления */
+.compiler-controls {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+/* Адаптивные отступы */
+.compiler-content {
+  padding: 0 max(16px, 2vw);
+}
+
+/* === СТИЛИЗАЦИЯ ANTD-КОМПОНЕНТОВ НА СТРАНИЦЕ === */
+
+/* Тело вкладки */
+.ant-tabs-tabpane {
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+/* Контент вкладки */
+.ant-tabs-content {
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+/* Контейнер вкладок */
+.ant-tabs-nav {
+  max-width: 100% !important;
+}
+
+/* Пространство внутри карточек */
+.ant-card .ant-space {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+/* Селекты и кнопки */
+.ant-select,
+.ant-btn {
+  max-width: 100%;
+}
