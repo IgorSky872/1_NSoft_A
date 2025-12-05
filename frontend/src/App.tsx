@@ -6,7 +6,7 @@ import { WorkflowProvider } from './context/WorkflowContext';
 import Login from './pages/Login';
 import Dashboard from './pages/dashboard/Dashboard';
 import Diagnostics from './pages/Diagnostics';
-import Compiler from './pages/Compiler';
+import Compiler from './pages/compiler/Compiler';
 import Inference from './pages/Inference';
 import Sidebar from './components/main_sidebar/Sidebar';
 import './App.css';

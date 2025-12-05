@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { Card, Upload, Button, Select, Space, Tabs, message } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
-import { useWorkflow } from '../context/WorkflowContext';
-import api from '../services/api';
-import OnnxGraph from '../components/onnx_graph/OnnxGraph';
-import type { OnnxData } from '../types';
+import { useWorkflow } from '../../context/WorkflowContext';
+import api from '../../services/api';
+import OnnxGraph from '../../components/onnx_graph/OnnxGraph';
+import type { OnnxData } from '../../types';
+import './Compiler.css';
 
 const { Dragger } = Upload;
 const { Option } = Select;

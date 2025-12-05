@@ -1,28 +1,32 @@
-/* Критично: Устанавливаем box-sizing для всех элементов */
-* {
-  box-sizing: border-box !important;
-}
-
 /* Основные стили приложения */
 .app {
   display: flex;
   height: 100vh;
+  overflow: hidden; /* Предотвращаем прокрутку всей страницы */
 }
 
 .main-content {
   flex: 1;
-  /*margin-left: 250px;*/
-  margin-left: 20vh;
+  min-width: 0; /* КРИТИЧНО: позволяет сжиматься */
   padding: 24px;
   overflow-y: auto;
   background: #f0f2f5;
-  transition: margin-left 0.3s;
 }
 
 /* Адаптивность */
 @media (max-width: 768px) {
+  .sidebar {
+    width: 60px; /* Только иконки */
+    min-width: 60px;
+  }
+
+  .sidebar .menu-text {
+    display: none; /* Скрываем текст */
+  }
+
   .main-content {
-    margin-left: 0;
+    flex: 1;
     padding: 16px;
+    /* НЕ НУЖЕН margin-left или width */
   }
 }

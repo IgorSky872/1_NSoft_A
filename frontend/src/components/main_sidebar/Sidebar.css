@@ -3,11 +3,8 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  width: 20vh;
-  /*width: 250px;*/
-  position: fixed;
-  left: 0;
-  top: 0;
+  width: 250px; /* Фиксированная ширина вместо 20vh */
+  flex-shrink: 0; /* Важно: не даёт сжиматься */
   background: #001529;
   transition: width 0.3s;
   z-index: 100;

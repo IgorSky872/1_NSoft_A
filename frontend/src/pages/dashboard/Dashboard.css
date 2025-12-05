@@ -2,20 +2,21 @@
 
 /* === КРИТИЧЕСКИЙ ФИКС: Главный контейнер === */
 .dashboard-wrapper {
-  display: flex !important;
+  display: flex;
+  min-width: 0; /* КРИТИЧНО: позволяет flex-элементу сжиматься */
   /*width: calc(100vw - 300px)!important;
-  max-width: calc(100vw - 300px)!important;*/
+  max-width: calc(100vw - 300px)!important;
   width: 100vw !important;
-  max-width: 85vw !important;
-  overflow-x: hidden !important;
-  height: 100vh !important;
+  max-width: 85vw !important;*/
+  overflow-x: hidden;
+  height: 100vh;
 }
 
 /* Основная область устройств - КЛЮЧЕВОЙ ФИКС */
 .devices-main-area {
   flex: 1 1 0% !important; /* flex: 1 с min-width: 0 эффектом */
   min-width: 0 !important; /* КРИТИЧНО: позволяет flex-элементу сжиматься */
-  max-width: 100% !important;
+  /*max-width: 100% !important;*/
   overflow-x: hidden !important;
   overflow-y: auto !important;
   background: white !important;
@@ -28,7 +29,7 @@
 .devices-main-area.compact {
   flex: 1 1 0% !important; /* Просто занимает доступное место */
   min-width: 0 !important;
-  max-width: 100% !important;
+  /*max-width: 100% !important;*/
 }
 
 /* Заголовок фиксированной высоты */
