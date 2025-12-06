@@ -7,10 +7,11 @@
 
 .main-content {
   flex: 1;
-  min-width: 0; /* КРИТИЧНО: позволяет сжиматься */
-  padding: 24px;
-  overflow-y: auto;
+  min-width: 0;
+  overflow-y: auto; /* Только тут должна быть прокрутка */
   background: #f0f2f5;
+  padding: 24px;
+  box-sizing: border-box; /* Важно для правильных расчётов */
 }
 
 /* Адаптивность */

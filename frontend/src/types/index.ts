@@ -31,6 +31,22 @@ export interface Device {
   diagnostics?: DeviceDiagnostics;
   memristors?: Memristor[];
   cores?: Core[];
+
+  // Hardware specs (optional for backward compatibility)
+  clock_frequency?: number;
+  memory_bandwidth?: number;
+  supported_dtypes?: string[];
+  architecture_type?: string;
+  sparsity_support?: boolean;
+  crossbar_topology?: string;
+  firmware_version?: string;
+  power_profile?: { idle: number; peak: number };
+  thermal_throttling?: { enabled: boolean; threshold: number };
+
+  // Neural network capabilities
+  supported_activations?: string[];
+  supported_layers?: string[];
+  leakage_types?: string[];
 }
 
 export interface DeviceDiagnostics {
@@ -118,4 +134,21 @@ export interface InferenceToolbarProps {
   onZoomOut: () => void;
   onModelProps: () => void;
   onNodeProps: () => void;
+}
+
+// ===== КОНФИГУРАЦИЯ MOCK-УСТРОЙСТВА =====
+export interface MockDeviceConfig {
+  core_count: number;
+  memristors_per_core: number;
+  clock_frequency: number;
+  memory_bandwidth: number;
+  supported_dtypes: string[];
+  architecture_type: string;
+  sparsity_support: boolean;
+  crossbar_topology: string;
+  firmware_version: string;
+  // Neural network support
+  supported_activations: string[];
+  supported_layers: string[];
+  leakage_types: string[];
 }

@@ -1,3 +1,5 @@
+// frontend/src/components/main_sidebar/Sidebar.tsx
+
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -65,31 +67,31 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen }) => {
 
   return (
     <div className="sidebar">
-      <Spin spinning={loggingOut} tip="Logging out...">
-        {/* Верхняя часть с меню */}
-        <div className="sidebar-menu">
-          <ul>
-            {menuItems.map(item => {
-              const enabled = isStepEnabled(item.step);
-              const isActive = location.pathname === item.path;
+      {/* Верхняя часть с меню - без Spin */}
+      <div className="sidebar-menu">
+        <ul>
+          {menuItems.map(item => {
+            const enabled = isStepEnabled(item.step);
+            const isActive = location.pathname === item.path;
 
-              return (
-                <li key={item.path}>
-                  <Link
-                    to={enabled ? item.path : '#'}
-                    className={`${isActive ? 'active' : ''} ${!enabled ? 'disabled' : ''}`}
-                  >
-                    <span>{item.icon}</span>
-                    {item.label}
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
+            return (
+              <li key={item.path}>
+                <Link
+                  to={enabled ? item.path : '#'}
+                  className={`${isActive ? 'active' : ''} ${!enabled ? 'disabled' : ''}`}
+                >
+                  <span>{item.icon}</span>
+                  {item.label}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
 
-        {/* Нижняя часть с пользователем и информацией о сессии */}
-        <div className="sidebar-footer">
+      {/* Нижняя часть с пользователем - Spin только здесь */}
+      <div className="sidebar-footer">
+        <Spin spinning={loggingOut} tip="Logging out...">
           <div className="user-info">
             <div className="username">{user?.username || 'Guest'}</div>
             <div className="role">{user?.role || 'user'}</div>
@@ -109,11 +111,12 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen }) => {
             block
             className="logout-button"
             icon={<LogoutOutlined />}
+            disabled={loggingOut}
           >
             Logout
           </Button>
-        </div>
-      </Spin>
+        </Spin>
+      </div>
     </div>
   );
 };

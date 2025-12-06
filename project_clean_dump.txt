@@ -197,8 +197,26 @@ from app.models.workflow_models import DeviceWorkflowStatus
 from app.database import get_db
 from app.auth.dependencies import get_current_user  # ИЗМЕНЕНО
 import uuid
+from pydantic import BaseModel
+from typing import List, Optional
 
 router = APIRouter()
+
+
+class MockDeviceConfig(BaseModel):
+    core_count: int = 1
+    memristors_per_core: int = 4092
+    clock_frequency: int = 1000
+    memory_bandwidth: int = 5
+    supported_dtypes: List[str] = ["int8", "float16"]
+    architecture_type: str = "simd"
+    sparsity_support: bool = True
+    crossbar_topology: str = "full_mesh"
+    firmware_version: str = "1.0.0"
+    # Neural network support
+    supported_activations: List[str] = ["relu", "relu6", "leaky_relu", "tanh", "sigmoid"]
+    supported_layers: List[str] = ["conv2d", "maxpool", "avgpool", "fc", "batchnorm"]
+    leakage_types: List[str] = ["stuck_at_0", "stuck_at_1", "random_flip"]
 
 
 @router.get("/devices")
@@ -221,18 +239,49 @@ async def get_devices(db: Session = Depends(get_db), user=Depends(get_current_us
 
 
 @router.post("/devices/mock")
-async def create_mock_device(db: Session = Depends(get_db), user=Depends(get_current_user)):
+async def create_mock_device(
+        config: Optional[MockDeviceConfig] = None,
+        db: Session = Depends(get_db),
+        user=Depends(get_current_user)
+):
+    """Create a configurable mock device with neural network capabilities"""
+    cfg = config or MockDeviceConfig()
+    total_memristors = cfg.memristors_per_core * cfg.core_count
+
     mock_device = Device(
-        id=f"TestDevice-{uuid.uuid4().hex[:8]}",
+        id=f"MockDevice-{uuid.uuid4().hex[:8]}",
         status="idle",
         version="1.0",
-        cores=[{"id": i, "status": "healthy"} for i in range(8)],
-        memristors=[{"id": i, "status": "active"} for i in range(32)],
-        is_mock=True
+        cores=[{"id": i, "status": "healthy"} for i in range(cfg.core_count)],
+        memristors=[{"id": i, "status": "active"} for i in range(total_memristors)],
+        is_mock=True,
+        # Hardware specs
+        clock_frequency=cfg.clock_frequency,
+        memory_bandwidth=cfg.memory_bandwidth,
+        supported_dtypes=cfg.supported_dtypes,
+        architecture_type=cfg.architecture_type,
+        sparsity_support=cfg.sparsity_support,
+        crossbar_topology=cfg.crossbar_topology,
+        firmware_version=cfg.firmware_version,
+        # Neural network capabilities
+        supported_activations=cfg.supported_activations,
+        supported_layers=cfg.supported_layers,
+        leakage_types=cfg.leakage_types,
     )
     db.add(mock_device)
     db.commit()
-    return {"device": {"id": mock_device.id, "status": mock_device.status}}
+    return {
+        "device": {
+            "id": mock_device.id,
+            "status": mock_device.status,
+            "config": {
+                "cores": cfg.core_count,
+                "memristors_per_core": cfg.memristors_per_core,
+                "total_memristors": total_memristors,
+            }
+        }
+    }
+
 
 @router.get("/devices/{device_id}")
 async def get_device(device_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
@@ -244,7 +293,8 @@ async def get_device(device_id: str, db: Session = Depends(get_db), user=Depends
         "status": device.status,
         "version": device.version,
         "is_mock": device.is_mock,
-        "diagnostics": device.diagnostics
+        "diagnostics": device.diagnostics,
+        # Все новые поля автоматически включаются в ответ
     }
 
 
@@ -285,6 +335,11 @@ async def get_device_details(
     if not device:
         raise HTTPException(404, "Device not found")
 
+    # Вычисляем мемристоры на ядро для отображения
+    memristors_per_core = 0
+    if device.cores and device.memristors:
+        memristors_per_core = len(device.memristors) // len(device.cores)
+
     return {
         "id": device.id,
         "status": device.status,
@@ -293,9 +348,58 @@ async def get_device_details(
         "diagnostics": device.diagnostics,
         "memristors": device.memristors,
         "cores": device.cores,
+        "clock_frequency": device.clock_frequency,
+        "memory_bandwidth": device.memory_bandwidth,
+        "supported_dtypes": device.supported_dtypes,
+        "architecture_type": device.architecture_type,
+        "sparsity_support": device.sparsity_support,
+        "crossbar_topology": device.crossbar_topology,
+        "firmware_version": device.firmware_version,
+        "supported_activations": device.supported_activations,
+        "supported_layers": device.supported_layers,
+        "leakage_types": device.leakage_types,
+        "memristors_per_core": memristors_per_core,
         "created_at": device.created_at if hasattr(device, 'created_at') else None,
         "updated_at": device.updated_at if hasattr(device, 'updated_at') else None
     }
+
+
+@router.put("/devices/{device_id}/config")
+async def update_device_config(
+        device_id: str,
+        config: MockDeviceConfig,
+        db: Session = Depends(get_db),
+        user=Depends(get_current_user)
+):
+    """Update mock device configuration"""
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if not device:
+        raise HTTPException(404, "Device not found")
+
+    if not device.is_mock:
+        raise HTTPException(403, "Only mock devices can be reconfigured")
+
+    # Update hardware fields
+    device.clock_frequency = config.clock_frequency
+    device.memory_bandwidth = config.memory_bandwidth
+    device.supported_dtypes = config.supported_dtypes
+    device.architecture_type = config.architecture_type
+    device.sparsity_support = config.sparsity_support
+    device.crossbar_topology = config.crossbar_topology
+    device.firmware_version = config.firmware_version
+
+    # Update neural network fields
+    device.supported_activations = config.supported_activations
+    device.supported_layers = config.supported_layers
+    device.leakage_types = config.leakage_types
+
+    # Recreate cores and memristors with new dimensions
+    device.cores = [{"id": i, "status": "healthy"} for i in range(config.core_count)]
+    total_memristors = config.memristors_per_core * config.core_count
+    device.memristors = [{"id": i, "status": "active"} for i in range(total_memristors)]
+
+    db.commit()
+    return {"status": "updated", "device_id": device_id}
 
 ============================================================
 FILE: backend\app\api\diagnostics_router.py
@@ -642,7 +746,7 @@ Base = declarative_base()
 ============================================================
 FILE: backend\app\models\device_models.py
 ============================================================
-from sqlalchemy import Column, String, Boolean, JSON, DateTime
+from sqlalchemy import Column, String, Boolean, JSON, DateTime, Integer
 from sqlalchemy.sql import func
 from .base import Base
 
@@ -657,6 +761,23 @@ class Device(Base):
     memristors = Column(JSON, nullable=True)
     diagnostics = Column(JSON, nullable=True)
     is_mock = Column(Boolean, default=False)
+
+    # Hardware configuration
+    clock_frequency = Column(Integer, default=1000)  # MHz
+    memory_bandwidth = Column(Integer, default=128)  # GB/s
+    supported_dtypes = Column(JSON, default=["int8", "float16"])
+    architecture_type = Column(String, default="simd")
+    sparsity_support = Column(Boolean, default=True)
+    crossbar_topology = Column(String, default="full_mesh")
+    firmware_version = Column(String, default="1.0.0")
+    power_profile = Column(JSON, default={"idle": 5, "peak": 45})
+    thermal_throttling = Column(JSON, default={"enabled": True, "threshold": 85})
+
+    # Neural network capabilities
+    supported_activations = Column(JSON, default=["relu", "tanh", "sigmoid"])
+    supported_layers = Column(JSON, default=["conv2d", "maxpool", "avgpool", "fc", "batchnorm"])
+    leakage_types = Column(JSON, default=["stuck_at_0", "stuck_at_1"])
+
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
@@ -4227,10 +4348,11 @@ FILE: frontend\src\App.css
 
 .main-content {
   flex: 1;
-  min-width: 0; /* КРИТИЧНО: позволяет сжиматься */
-  padding: 24px;
-  overflow-y: auto;
+  min-width: 0;
+  overflow-y: auto; /* Только тут должна быть прокрутка */
   background: #f0f2f5;
+  padding: 24px;
+  box-sizing: border-box; /* Важно для правильных расчётов */
 }
 
 /* Адаптивность */
@@ -5348,6 +5470,22 @@ export interface Device {
   diagnostics?: DeviceDiagnostics;
   memristors?: Memristor[];
   cores?: Core[];
+
+  // Hardware specs (optional for backward compatibility)
+  clock_frequency?: number;
+  memory_bandwidth?: number;
+  supported_dtypes?: string[];
+  architecture_type?: string;
+  sparsity_support?: boolean;
+  crossbar_topology?: string;
+  firmware_version?: string;
+  power_profile?: { idle: number; peak: number };
+  thermal_throttling?: { enabled: boolean; threshold: number };
+
+  // Neural network capabilities
+  supported_activations?: string[];
+  supported_layers?: string[];
+  leakage_types?: string[];
 }
 
 export interface DeviceDiagnostics {
@@ -5435,6 +5573,23 @@ export interface InferenceToolbarProps {
   onZoomOut: () => void;
   onModelProps: () => void;
   onNodeProps: () => void;
+}
+
+// ===== КОНФИГУРАЦИЯ MOCK-УСТРОЙСТВА =====
+export interface MockDeviceConfig {
+  core_count: number;
+  memristors_per_core: number;
+  clock_frequency: number;
+  memory_bandwidth: number;
+  supported_dtypes: string[];
+  architecture_type: string;
+  sparsity_support: boolean;
+  crossbar_topology: string;
+  firmware_version: string;
+  // Neural network support
+  supported_activations: string[];
+  supported_layers: string[];
+  leakage_types: string[];
 }
 
 ============================================================
@@ -5757,56 +5912,44 @@ FILE: frontend\src\pages\dashboard\Dashboard.css
 /* === КРИТИЧЕСКИЙ ФИКС: Главный контейнер === */
 .dashboard-wrapper {
   display: flex;
-  min-width: 0; /* КРИТИЧНО: позволяет flex-элементу сжиматься */
-  /*width: calc(100vw - 300px)!important;
-  max-width: calc(100vw - 300px)!important;
-  width: 100vw !important;
-  max-width: 85vw !important;*/
-  overflow-x: hidden;
-  height: 100vh;
+  min-height: 0;
+  width: 100%;
 }
 
-/* Основная область устройств - КЛЮЧЕВОЙ ФИКС */
+/* Основная область устройств */
 .devices-main-area {
-  flex: 1 1 0% !important; /* flex: 1 с min-width: 0 эффектом */
-  min-width: 0 !important; /* КРИТИЧНО: позволяет flex-элементу сжиматься */
-  /*max-width: 100% !important;*/
-  overflow-x: hidden !important;
-  overflow-y: auto !important;
-  background: white !important;
-  padding: 24px !important;
-  height: 100vh !important;
-  box-sizing: border-box !important;
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 24px;
+  background: white;
 }
 
 /* Вариант с компактной шириной при открытой панели */
 .devices-main-area.compact {
   flex: 1 1 0% !important; /* Просто занимает доступное место */
   min-width: 0 !important;
+  overflow-y: auto;
   /*max-width: 100% !important;*/
 }
 
 /* Заголовок фиксированной высоты */
 .dashboard-header {
-  display: flex !important;
-  justify-content: space-between !important;
-  align-items: center !important;
-  margin-bottom: 24px !important;
-  flex-shrink: 0 !important; /* Не сжиматься */
-  min-height: 48px !important;
-  width: 100% !important;
-  max-width: 100% !important;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  flex-shrink: 0;
 }
 
 /* Заголовок с переносом текста */
 .dashboard-title {
-  margin: 0 !important;
-  font-size: 28px !important;
-  font-weight: 600 !important;
-  color: #262626 !important;
-  word-wrap: break-word !important;
-  overflow-wrap: break-word !important;
-  max-width: 60% !important; /* Ограничиваем ширину */
+  margin: 0;
+  font-size: 28px;
+  font-weight: 600;
+  color: #262626;
+  word-wrap: break-word;
+  max-width: 60%;
 }
 
 /* Кнопка создания устройства - всегда видима */
@@ -5848,15 +5991,13 @@ FILE: frontend\src\pages\dashboard\Dashboard.css
 
 /* Правая панель свойств */
 .properties-panel-fix {
-  flex: 0 0 400px !important;
-  min-width: 0 !important; /* Позволяет сжиматься при необходимости */
-  max-width: 400px !important;
-  background: #fafafa !important;
-  border-left: 1px solid #e8e8e8 !important;
-  height: 100vh !important;
-  overflow-y: auto !important;
-  overflow-x: hidden !important;
-  box-sizing: border-box !important;
+  flex: 0 0 400px;
+  max-width: 400px;
+  overflow-y: auto;
+  overflow-x: hidden !important; /* ГЛАВНОЕ: скрываем горизонтальный скролл */
+  background: #fafafa;
+  border-left: 1px solid #e8e8e8;
+  box-sizing: border-box;
 }
 
 /* Контент панели свойств */
@@ -5865,6 +6006,7 @@ FILE: frontend\src\pages\dashboard\Dashboard.css
   width: 100% !important;
   max-width: 100% !important;
   overflow-x: hidden !important;
+  box-sizing: border-box;
 }
 
 /* Адаптивность - критичный момент */
@@ -6163,12 +6305,14 @@ html, body {
 ============================================================
 FILE: frontend\src\pages\dashboard\Dashboard.tsx
 ============================================================
+// frontend/src/pages/dashboard/Dashboard.tsx
 import React, { useEffect, useState } from 'react';
-import { Card, List, Button, Tag, Spin, Space, message, Row, Col, Divider, Descriptions, Badge, Modal } from 'antd';
+import { Card, List, Button, Tag, Spin, Space, message, Descriptions, Badge, Modal } from 'antd';
 import { useWorkflow } from '../../context/WorkflowContext';
 import api from '../../services/api';
-import type { Device } from '../../types';
+import type { Device, MockDeviceConfig } from '../../types';
 import { DeleteOutlined, InfoCircleOutlined, CloseOutlined } from '@ant-design/icons';
+import CreateMockDeviceModal from '../../components/create_mock_device_modal/CreateMockDeviceModal';
 import './Dashboard.css';
 
 const Dashboard: React.FC = () => {
@@ -6177,6 +6321,7 @@ const Dashboard: React.FC = () => {
   const [selectedDeviceInfo, setSelectedDeviceInfo] = useState<Device | null>(null);
   const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
   const { selectDevice, loading: workflowLoading } = useWorkflow();
+  const [showConfigModal, setShowConfigPanel] = useState(false);
 
   useEffect(() => {
     loadDevices();
@@ -6194,10 +6339,10 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const createMockDevice = async () => {
+  const createMockDevice = async (config?: MockDeviceConfig) => {
     try {
-      await api.post('/devices/mock');
-      message.success('Mock device created successfully');
+      const res = await api.post('/devices/mock', config || {});
+      message.success(`Mock device created: ${res.data.device.id}`);
       loadDevices();
     } catch (err) {
       message.error('Failed to create mock device');
@@ -6256,234 +6401,453 @@ const Dashboard: React.FC = () => {
   };
 
   return (
-    <div className="dashboard-wrapper">
-      {/* Основная область устройств */}
-      <div className={`devices-main-area ${showPropertiesPanel ? 'compact' : ''}`}>
-        <div className="dashboard-header">
-          <h1 className="dashboard-title">Device Selection</h1>
-          <Button
-            onClick={createMockDevice}
-            type="dashed"
-            icon={<InfoCircleOutlined />}
-            className="create-device-btn"
-          >
-            Create Mock Device
-          </Button>
-        </div>
-
-        <Spin spinning={loading || workflowLoading} className="devices-loader">
-          <List
-            grid={{
-              gutter: 16,
-              column: showPropertiesPanel ? 2 : 3,
-              xs: 1,
-              sm: 1,
-              md: 2,
-              lg: showPropertiesPanel ? 2 : 3,
-              xl: showPropertiesPanel ? 2 : 3,
-              xxl: showPropertiesPanel ? 2 : 4
-            }}
-            dataSource={devices}
-            className="devices-grid-fix"
-            renderItem={(dev: Device) => (
-              <List.Item>
-                <Card
-                  title={
-                    <div className="device-card-header">
-                      <span className="device-id" title={dev.id}>
-                        {dev.id}
-                      </span>
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={<DeleteOutlined />}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteDevice(dev.id);
-                        }}
-                        className="delete-device-btn"
-                        danger
-                      />
-                    </div>
-                  }
-                  extra={
-                    <Badge
-                      status={getStatusColor(dev.status) as any}
-                      text={getStatusText(dev.status)}
-                    />
-                  }
-                  actions={[
-                    <Button
-                      onClick={() => selectDevice(dev.id)}
-                      type="primary"
-                      disabled={dev.status !== 'idle'}
-                      className="select-device-btn"
-                    >
-                      Select Device
-                    </Button>,
-                    <Button
-                      onClick={() => showDeviceProperties(dev)}
-                      type="default"
-                      icon={<InfoCircleOutlined />}
-                      className="properties-btn"
-                    >
-                      Properties
-                    </Button>
-                  ]}
-                  hoverable
-                  className={`device-card ${selectedDeviceInfo?.id === dev.id ? 'selected' : ''}`}
-                >
-                  <div className="device-card-body">
-                    <Descriptions column={1} size="small" className="device-info">
-                      <Descriptions.Item label="Version">
-                        <Tag color="blue">{dev.version}</Tag>
-                      </Descriptions.Item>
-                      <Descriptions.Item label="Type">
-                        <Tag color={dev.is_mock ? 'orange' : 'green'}>
-                          {dev.is_mock ? 'Mock Device' : 'Physical Device'}
-                        </Tag>
-                      </Descriptions.Item>
-                      {dev.diagnostics && (
-                        <Descriptions.Item label="Health">
-                          <Tag color={dev.diagnostics.overall_status === 'passed' ? 'success' : 'error'}>
-                            {dev.diagnostics.overall_status}
-                          </Tag>
-                        </Descriptions.Item>
-                      )}
-                    </Descriptions>
-                  </div>
-                </Card>
-              </List.Item>
-            )}
-          />
-        </Spin>
-
-        {devices.length === 0 && !loading && (
-          <div className="empty-state-fix">
-            <div className="empty-devices-icon">📱</div>
-            <h3>No devices found</h3>
-            <p>Create a mock device to get started</p>
-            <Button type="primary" onClick={createMockDevice}>
-              Create First Device
+    <div style={{ width: '100%', minHeight: '100%' }}>
+      <div className="dashboard-wrapper">
+        {/* Основная область устройств */}
+        <div className={`devices-main-area ${showPropertiesPanel ? 'compact' : ''}`}>
+          <div className="dashboard-header">
+            <h1 className="dashboard-title">Device Selection</h1>
+            <Button
+              onClick={() => setShowConfigPanel(true)}
+              type="dashed"
+              icon={<InfoCircleOutlined />}
+              className="create-device-btn"
+            >
+              Create Mock Device
             </Button>
           </div>
-        )}
-      </div>
 
-      {/* Правая панель свойств */}
-      {showPropertiesPanel && selectedDeviceInfo && (
-        <div className="properties-panel-fix">
-          <div className="properties-content-fix">
-            <div className="properties-header">
-              <h2 className="properties-title">Device Properties</h2>
-              <Button
-                type="text"
-                icon={<CloseOutlined />}
-                onClick={closePropertiesPanel}
-                className="close-panel-btn"
-              />
+          <Spin spinning={loading || workflowLoading} className="devices-loader">
+            <List
+              grid={{
+                gutter: 16,
+                column: showPropertiesPanel ? 2 : 3,
+                xs: 1,
+                sm: 1,
+                md: 2,
+                lg: showPropertiesPanel ? 2 : 3,
+                xl: showPropertiesPanel ? 2 : 3,
+                xxl: showPropertiesPanel ? 2 : 4
+              }}
+              dataSource={devices}
+              className="devices-grid-fix"
+              renderItem={(dev: Device) => (
+                <List.Item>
+                  <Card
+                    title={
+                      <div className="device-card-header">
+                        <span className="device-id" title={dev.id}>
+                          {dev.id}
+                        </span>
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<DeleteOutlined />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteDevice(dev.id);
+                          }}
+                          className="delete-device-btn"
+                          danger
+                        />
+                      </div>
+                    }
+                    extra={
+                      <Badge
+                        status={getStatusColor(dev.status) as any}
+                        text={getStatusText(dev.status)}
+                      />
+                    }
+                    actions={[
+                      <Button
+                        onClick={() => selectDevice(dev.id)}
+                        type="primary"
+                        disabled={dev.status !== 'idle'}
+                        className="select-device-btn"
+                      >
+                        Select Device
+                      </Button>,
+                      <Button
+                        onClick={() => showDeviceProperties(dev)}
+                        type="default"
+                        icon={<InfoCircleOutlined />}
+                        className="properties-btn"
+                      >
+                        Properties
+                      </Button>
+                    ]}
+                    hoverable
+                    className={`device-card ${selectedDeviceInfo?.id === dev.id ? 'selected' : ''}`}
+                  >
+                    <div className="device-card-body">
+                      <Descriptions column={1} size="small" className="device-info">
+                        <Descriptions.Item label="Version">
+                          <Tag color="blue">{dev.version}</Tag>
+                        </Descriptions.Item>
+                        <Descriptions.Item label="Type">
+                          <Tag color={dev.is_mock ? 'orange' : 'green'}>
+                            {dev.is_mock ? 'Mock Device' : 'Physical Device'}
+                          </Tag>
+                        </Descriptions.Item>
+                        {dev.diagnostics && (
+                          <Descriptions.Item label="Health">
+                            <Tag color={dev.diagnostics.overall_status === 'passed' ? 'success' : 'error'}>
+                              {dev.diagnostics.overall_status}
+                            </Tag>
+                          </Descriptions.Item>
+                        )}
+                      </Descriptions>
+                    </div>
+                  </Card>
+                </List.Item>
+              )}
+            />
+          </Spin>
+
+          {devices.length === 0 && !loading && (
+            <div className="empty-state-fix">
+              <div className="empty-devices-icon">📱</div>
+              <h3>No devices found</h3>
+              <p>Create a mock device to get started</p>
+              <Button type="primary" onClick={() => setShowConfigPanel(true)}>
+                Create First Device
+              </Button>
             </div>
+          )}
+        </div>
 
-            <Card className="property-card">
-              <Descriptions column={1} className="property-descriptions">
-                <Descriptions.Item label="Device ID">
-                  <strong>{selectedDeviceInfo.id}</strong>
-                </Descriptions.Item>
-                <Descriptions.Item label="Status">
-                  <Badge
-                    status={getStatusColor(selectedDeviceInfo.status) as any}
-                    text={getStatusText(selectedDeviceInfo.status)}
-                  />
-                </Descriptions.Item>
-                <Descriptions.Item label="Version">
-                  {selectedDeviceInfo.version}
-                </Descriptions.Item>
-                <Descriptions.Item label="Type">
-                  <Tag color={selectedDeviceInfo.is_mock ? 'orange' : 'green'}>
-                    {selectedDeviceInfo.is_mock ? 'Mock Device' : 'Physical Device'}
-                  </Tag>
-                </Descriptions.Item>
-              </Descriptions>
-            </Card>
+        {/* Правая панель свойств */}
+        {showPropertiesPanel && selectedDeviceInfo && (
+          <div className="properties-panel-fix">
+            <div className="properties-content-fix">
+              <div className="properties-header">
+                <h2 className="properties-title">Device Properties</h2>
+                <Button
+                  type="text"
+                  icon={<CloseOutlined />}
+                  onClick={closePropertiesPanel}
+                  className="close-panel-btn"
+                />
+              </div>
 
-            {selectedDeviceInfo.diagnostics && (
-              <Card title="Diagnostics" className="property-card">
+              <Card className="property-card">
                 <Descriptions column={1} className="property-descriptions">
-                  <Descriptions.Item label="Overall Status">
-                    <Tag color={selectedDeviceInfo.diagnostics.overall_status === 'passed' ? 'success' : 'error'}>
-                      {selectedDeviceInfo.diagnostics.overall_status}
+                  <Descriptions.Item label="Device ID">
+                    <strong>{selectedDeviceInfo.id}</strong>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Status">
+                    <Badge
+                      status={getStatusColor(selectedDeviceInfo.status) as any}
+                      text={getStatusText(selectedDeviceInfo.status)}
+                    />
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Version">
+                    {selectedDeviceInfo.version}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Type">
+                    <Tag color={selectedDeviceInfo.is_mock ? 'orange' : 'green'}>
+                      {selectedDeviceInfo.is_mock ? 'Mock Device' : 'Physical Device'}
                     </Tag>
                   </Descriptions.Item>
-                  <Descriptions.Item label="Available Cores">
-                    {selectedDeviceInfo.diagnostics.cores?.length || 0}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="Memristors">
-                    {selectedDeviceInfo.diagnostics.memristors?.available || 0} /
-                    {selectedDeviceInfo.diagnostics.memristors?.total || 0}
-                  </Descriptions.Item>
                 </Descriptions>
-
-                {selectedDeviceInfo.diagnostics.cores && (
-                  <div className="cores-list">
-                    <h4>Cores Status</h4>
-                    <div className="cores-grid">
-                      {selectedDeviceInfo.diagnostics.cores.map((core: any) => (
-                        <Tag key={core.id} color={core.status === 'healthy' ? 'success' : 'error'} className="core-tag">
-                          Core {core.id}
-                        </Tag>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </Card>
-            )}
 
-            {selectedDeviceInfo.memristors && (
-              <Card title="Memristor Details" className="property-card">
-                <List
-                  size="small"
-                  dataSource={selectedDeviceInfo.memristors}
-                  renderItem={(mem: any) => (
-                    <List.Item>
-                      <div className="memristor-item">
-                        <span>Memristor {mem.id}</span>
-                        <Tag color={mem.status === 'active' ? 'success' : 'error'}>
-                          {mem.status}
-                        </Tag>
+              {/* Hardware Configuration (только ключевые параметры) */}
+              {(selectedDeviceInfo.cores || selectedDeviceInfo.memristors) && (
+                <Card title="Hardware Configuration" className="property-card">
+                  <Descriptions column={1} className="property-descriptions">
+                    <Descriptions.Item label="Cores">
+                      <Tag color="blue">
+                        {selectedDeviceInfo.cores?.length || 0}
+                      </Tag>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Memristors per Core">
+                      <Tag color="purple">
+                        {selectedDeviceInfo.memristors && selectedDeviceInfo.cores
+                          ? Math.floor(selectedDeviceInfo.memristors.length / selectedDeviceInfo.cores.length)
+                          : 'N/A'}
+                      </Tag>
+                    </Descriptions.Item>
+                  </Descriptions>
+                </Card>
+              )}
+
+              {/* Neural Network Capabilities (только ключевые параметры) */}
+              {(selectedDeviceInfo.supported_layers || selectedDeviceInfo.supported_activations) && (
+                <Card title="Neural Network Support" className="property-card">
+                  <Descriptions column={1} className="property-descriptions">
+                    {selectedDeviceInfo.supported_layers && (
+                      <Descriptions.Item label="Supported Layers">
+                        <Space size={[0, 8]} wrap>
+                          {selectedDeviceInfo.supported_layers.map(layer => (
+                            <Tag key={layer} color="purple" style={{ marginBottom: '4px' }}>
+                              {layer}
+                            </Tag>
+                          ))}
+                        </Space>
+                      </Descriptions.Item>
+                    )}
+                    {selectedDeviceInfo.supported_activations && (
+                      <Descriptions.Item label="Activations">
+                        <Space size={[0, 8]} wrap>
+                          {selectedDeviceInfo.supported_activations.map(act => (
+                            <Tag key={act} color="cyan" style={{ marginBottom: '4px' }}>
+                              {act}
+                            </Tag>
+                          ))}
+                        </Space>
+                      </Descriptions.Item>
+                    )}
+                  </Descriptions>
+                </Card>
+              )}
+
+              {selectedDeviceInfo.diagnostics && (
+                <Card title="Diagnostics" className="property-card">
+                  <Descriptions column={1} className="property-descriptions">
+                    <Descriptions.Item label="Overall Status">
+                      <Tag color={selectedDeviceInfo.diagnostics.overall_status === 'passed' ? 'success' : 'error'}>
+                        {selectedDeviceInfo.diagnostics.overall_status}
+                      </Tag>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Available Cores">
+                      {selectedDeviceInfo.diagnostics.cores?.length || 0}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Memristors">
+                      {selectedDeviceInfo.diagnostics.memristors?.available || 0} /
+                      {selectedDeviceInfo.diagnostics.memristors?.total || 0}
+                    </Descriptions.Item>
+                  </Descriptions>
+
+                  {selectedDeviceInfo.diagnostics.cores && (
+                    <div className="cores-list">
+                      <h4>Cores Status</h4>
+                      <div className="cores-grid">
+                        {selectedDeviceInfo.diagnostics.cores.map((core: any) => (
+                          <Tag key={core.id} color={core.status === 'healthy' ? 'success' : 'error'} className="core-tag">
+                            Core {core.id}
+                          </Tag>
+                        ))}
                       </div>
-                    </List.Item>
+                    </div>
                   )}
-                  className="memristors-list"
-                />
-              </Card>
-            )}
+                </Card>
+              )}
 
-            <div className="panel-actions">
-              <Button
-                onClick={() => selectDevice(selectedDeviceInfo.id)}
-                type="primary"
-                disabled={selectedDeviceInfo.status !== 'idle'}
-                className="select-device-panel-btn"
-              >
-                Select This Device
-              </Button>
-              <Button
-                onClick={() => deleteDevice(selectedDeviceInfo.id)}
-                type="default"
-                danger
-                className="delete-device-panel-btn"
-              >
-                Delete Device
-              </Button>
+              {selectedDeviceInfo.memristors && (
+                <Card title="Memristor Details" className="property-card">
+                  <List
+                    size="small"
+                    dataSource={selectedDeviceInfo.memristors}
+                    renderItem={(mem: any) => (
+                      <List.Item>
+                        <div className="memristor-item">
+                          <span>Memristor {mem.id}</span>
+                          <Tag color={mem.status === 'active' ? 'success' : 'error'}>
+                            {mem.status}
+                          </Tag>
+                        </div>
+                      </List.Item>
+                    )}
+                    className="memristors-list"
+                  />
+                </Card>
+              )}
+
+              <div className="panel-actions">
+                <Button
+                  onClick={() => selectDevice(selectedDeviceInfo.id)}
+                  type="primary"
+                  disabled={selectedDeviceInfo.status !== 'idle'}
+                  className="select-device-panel-btn"
+                >
+                  Select This Device
+                </Button>
+                <Button
+                  onClick={() => deleteDevice(selectedDeviceInfo.id)}
+                  type="default"
+                  danger
+                  className="delete-device-panel-btn"
+                >
+                  Delete Device
+                </Button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+
+        {/* Модальное окно создания устройства */}
+        <CreateMockDeviceModal
+          visible={showConfigModal}
+          onCancel={() => setShowConfigPanel(false)}
+          onCreate={createMockDevice}
+        />
+      </div>
     </div>
   );
 };
 
 export default Dashboard;
+
+============================================================
+FILE: frontend\src\components\create_mock_device_modal\CreateMockDeviceModal.tsx
+============================================================
+// frontend/src/components/CreateMockDeviceModal.tsx
+import React from 'react';
+import { Modal, Form, InputNumber, Select, Switch, Input, Divider, Space, Tag } from 'antd';
+import type { MockDeviceConfig } from '../../types';
+
+interface Props {
+  visible: boolean;
+  onCancel: () => void;
+  onCreate: (config: MockDeviceConfig) => void;
+}
+
+const CreateMockDeviceModal: React.FC<Props> = ({ visible, onCancel, onCreate }) => {
+  const [form] = Form.useForm();
+
+  const defaultConfig: MockDeviceConfig = {
+    core_count: 8,
+    memristors_per_core: 32,
+    clock_frequency: 1000,
+    memory_bandwidth: 128,
+    supported_dtypes: ["int8", "float16"],
+    architecture_type: "simd",
+    sparsity_support: true,
+    crossbar_topology: "full_mesh",
+    firmware_version: "1.0.0",
+    // Neural network defaults
+    supported_activations: ["relu", "relu6", "leaky_relu", "tanh", "sigmoid"],
+    supported_layers: ["conv2d", "maxpool", "avgpool", "fc", "batchnorm"],
+    leakage_types: ["stuck_at_0", "stuck_at_1", "random_flip"]
+  };
+
+  const handleOk = async () => {
+    try {
+      const values = await form.validateFields();
+      onCreate(values);
+      form.resetFields();
+    } catch (error) {
+      console.error('Validation failed:', error);
+    }
+  };
+
+  return (
+    <Modal
+      title="Configure Mock Device"
+      open={visible}
+      onOk={handleOk}
+      onCancel={onCancel}
+      width={700}
+      okText="Create"
+      cancelText="Cancel"
+    >
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={defaultConfig}
+      >
+        <Divider orientation="left">Hardware Configuration</Divider>
+
+        <Form.Item label="Cores" name="core_count" rules={[{ required: true }]}>
+          <InputNumber min={1} max={128} style={{ width: '100%' }} />
+        </Form.Item>
+
+        <Form.Item label="Memristors per Core" name="memristors_per_core" rules={[{ required: true }]}>
+          <InputNumber min={8} max={256} step={8} style={{ width: '100%' }} />
+        </Form.Item>
+
+        <Form.Item label="Clock Frequency (MHz)" name="clock_frequency" rules={[{ required: true }]}>
+          <InputNumber min={100} max={5000} style={{ width: '100%' }} />
+        </Form.Item>
+
+        <Form.Item label="Memory Bandwidth (GB/s)" name="memory_bandwidth" rules={[{ required: true }]}>
+          <InputNumber min={16} max={1024} style={{ width: '100%' }} />
+        </Form.Item>
+
+        <Form.Item label="Supported Data Types" name="supported_dtypes" rules={[{ required: true }]}>
+          <Select mode="tags" tokenSeparators={[',']}>
+            <Select.Option value="int8">int8</Select.Option>
+            <Select.Option value="int16">int16</Select.Option>
+            <Select.Option value="float16">float16</Select.Option>
+            <Select.Option value="float32">float32</Select.Option>
+          </Select>
+        </Form.Item>
+
+        <Form.Item label="Architecture Type" name="architecture_type" rules={[{ required: true }]}>
+          <Select>
+            <Select.Option value="simd">SIMD</Select.Option>
+            <Select.Option value="mimd">MIMD</Select.Option>
+            <Select.Option value="dataflow">Dataflow</Select.Option>
+          </Select>
+        </Form.Item>
+
+        <Form.Item label="Sparsity Support" name="sparsity_support" valuePropName="checked">
+          <Switch />
+        </Form.Item>
+
+        <Form.Item label="Crossbar Topology" name="crossbar_topology" rules={[{ required: true }]}>
+          <Select>
+            <Select.Option value="full_mesh">Full Mesh</Select.Option>
+            <Select.Option value="systolic">Systolic Array</Select.Option>
+            <Select.Option value="hierarchical">Hierarchical</Select.Option>
+          </Select>
+        </Form.Item>
+
+        <Form.Item label="Firmware Version" name="firmware_version" rules={[{ required: true }]}>
+          <Input />
+        </Form.Item>
+
+        <Divider orientation="left">Neural Network Support</Divider>
+
+        <Form.Item
+          label="Supported Activations"
+          name="supported_activations"
+          rules={[{ required: true, message: 'Select at least one activation' }]}
+        >
+          <Select mode="multiple" placeholder="Select activation functions">
+            <Select.Option value="relu">ReLU</Select.Option>
+            <Select.Option value="relu6">ReLU6</Select.Option>
+            <Select.Option value="leaky_relu">Leaky ReLU</Select.Option>
+            <Select.Option value="tanh">Tanh</Select.Option>
+            <Select.Option value="sigmoid">Sigmoid</Select.Option>
+            <Select.Option value="softmax">Softmax</Select.Option>
+          </Select>
+        </Form.Item>
+
+        <Form.Item
+          label="Supported Layers"
+          name="supported_layers"
+          rules={[{ required: true, message: 'Select at least one layer type' }]}
+        >
+          <Select mode="multiple" placeholder="Select layer types">
+            <Select.Option value="conv2d">Conv2D</Select.Option>
+            <Select.Option value="maxpool">MaxPooling</Select.Option>
+            <Select.Option value="avgpool">AvgPooling</Select.Option>
+            <Select.Option value="fc">Fully Connected</Select.Option>
+            <Select.Option value="batchnorm">BatchNorm</Select.Option>
+            <Select.Option value="dropout">Dropout</Select.Option>
+          </Select>
+        </Form.Item>
+
+        <Form.Item
+          label="Leakage Types"
+          name="leakage_types"
+          rules={[{ required: true, message: 'Select at least one leakage type' }]}
+        >
+          <Select mode="multiple" placeholder="Select leakage types">
+            <Select.Option value="stuck_at_0">Stuck-at-0</Select.Option>
+            <Select.Option value="stuck_at_1">Stuck-at-1</Select.Option>
+            <Select.Option value="random_flip">Random Flip</Select.Option>
+            <Select.Option value="bit_flip">Bit Flip</Select.Option>
+          </Select>
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+};
+
+export default CreateMockDeviceModal;
 
 ============================================================
 FILE: frontend\src\components\main_sidebar\Sidebar.css
@@ -6493,11 +6857,8 @@ FILE: frontend\src\components\main_sidebar\Sidebar.css
   display: flex;
   flex-direction: column;
   height: 100vh;
-  width: 20vh;
-  /*width: 250px;*/
-  position: fixed;
-  left: 0;
-  top: 0;
+  width: 250px; /* Фиксированная ширина вместо 20vh */
+  flex-shrink: 0; /* Важно: не даёт сжиматься */
   background: #001529;
   transition: width 0.3s;
   z-index: 100;
@@ -6556,9 +6917,11 @@ FILE: frontend\src\components\main_sidebar\Sidebar.css
 
 /* Футер */
 .sidebar-footer {
+  margin-top: auto; /* Это автоматически прижмет блок к низу */
   padding: 16px;
   border-top: 1px solid #333;
   background: #000c17;
+  flex-shrink: 0; /* Не сжимать при нехватке места */
 }
 
 .user-info {
@@ -6614,6 +6977,8 @@ FILE: frontend\src\components\main_sidebar\Sidebar.css
 ============================================================
 FILE: frontend\src\components\main_sidebar\Sidebar.tsx
 ============================================================
+// frontend/src/components/main_sidebar/Sidebar.tsx
+
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -6681,31 +7046,31 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen }) => {
 
   return (
     <div className="sidebar">
-      <Spin spinning={loggingOut} tip="Logging out...">
-        {/* Верхняя часть с меню */}
-        <div className="sidebar-menu">
-          <ul>
-            {menuItems.map(item => {
-              const enabled = isStepEnabled(item.step);
-              const isActive = location.pathname === item.path;
+      {/* Верхняя часть с меню - без Spin */}
+      <div className="sidebar-menu">
+        <ul>
+          {menuItems.map(item => {
+            const enabled = isStepEnabled(item.step);
+            const isActive = location.pathname === item.path;
 
-              return (
-                <li key={item.path}>
-                  <Link
-                    to={enabled ? item.path : '#'}
-                    className={`${isActive ? 'active' : ''} ${!enabled ? 'disabled' : ''}`}
-                  >
-                    <span>{item.icon}</span>
-                    {item.label}
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
+            return (
+              <li key={item.path}>
+                <Link
+                  to={enabled ? item.path : '#'}
+                  className={`${isActive ? 'active' : ''} ${!enabled ? 'disabled' : ''}`}
+                >
+                  <span>{item.icon}</span>
+                  {item.label}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
 
-        {/* Нижняя часть с пользователем и информацией о сессии */}
-        <div className="sidebar-footer">
+      {/* Нижняя часть с пользователем - Spin только здесь */}
+      <div className="sidebar-footer">
+        <Spin spinning={loggingOut} tip="Logging out...">
           <div className="user-info">
             <div className="username">{user?.username || 'Guest'}</div>
             <div className="role">{user?.role || 'user'}</div>
@@ -6725,11 +7090,12 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen }) => {
             block
             className="logout-button"
             icon={<LogoutOutlined />}
+            disabled={loggingOut}
           >
             Logout
           </Button>
-        </div>
-      </Spin>
+        </Spin>
+      </div>
     </div>
   );
 };

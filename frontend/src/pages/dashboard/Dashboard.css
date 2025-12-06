@@ -3,56 +3,44 @@
 /* === КРИТИЧЕСКИЙ ФИКС: Главный контейнер === */
 .dashboard-wrapper {
   display: flex;
-  min-width: 0; /* КРИТИЧНО: позволяет flex-элементу сжиматься */
-  /*width: calc(100vw - 300px)!important;
-  max-width: calc(100vw - 300px)!important;
-  width: 100vw !important;
-  max-width: 85vw !important;*/
-  overflow-x: hidden;
-  height: 100vh;
+  min-height: 0;
+  width: 100%;
 }
 
-/* Основная область устройств - КЛЮЧЕВОЙ ФИКС */
+/* Основная область устройств */
 .devices-main-area {
-  flex: 1 1 0% !important; /* flex: 1 с min-width: 0 эффектом */
-  min-width: 0 !important; /* КРИТИЧНО: позволяет flex-элементу сжиматься */
-  /*max-width: 100% !important;*/
-  overflow-x: hidden !important;
-  overflow-y: auto !important;
-  background: white !important;
-  padding: 24px !important;
-  height: 100vh !important;
-  box-sizing: border-box !important;
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 24px;
+  background: white;
 }
 
 /* Вариант с компактной шириной при открытой панели */
 .devices-main-area.compact {
   flex: 1 1 0% !important; /* Просто занимает доступное место */
   min-width: 0 !important;
+  overflow-y: auto;
   /*max-width: 100% !important;*/
 }
 
 /* Заголовок фиксированной высоты */
 .dashboard-header {
-  display: flex !important;
-  justify-content: space-between !important;
-  align-items: center !important;
-  margin-bottom: 24px !important;
-  flex-shrink: 0 !important; /* Не сжиматься */
-  min-height: 48px !important;
-  width: 100% !important;
-  max-width: 100% !important;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  flex-shrink: 0;
 }
 
 /* Заголовок с переносом текста */
 .dashboard-title {
-  margin: 0 !important;
-  font-size: 28px !important;
-  font-weight: 600 !important;
-  color: #262626 !important;
-  word-wrap: break-word !important;
-  overflow-wrap: break-word !important;
-  max-width: 60% !important; /* Ограничиваем ширину */
+  margin: 0;
+  font-size: 28px;
+  font-weight: 600;
+  color: #262626;
+  word-wrap: break-word;
+  max-width: 60%;
 }
 
 /* Кнопка создания устройства - всегда видима */
@@ -94,15 +82,13 @@
 
 /* Правая панель свойств */
 .properties-panel-fix {
-  flex: 0 0 400px !important;
-  min-width: 0 !important; /* Позволяет сжиматься при необходимости */
-  max-width: 400px !important;
-  background: #fafafa !important;
-  border-left: 1px solid #e8e8e8 !important;
-  height: 100vh !important;
-  overflow-y: auto !important;
-  overflow-x: hidden !important;
-  box-sizing: border-box !important;
+  flex: 0 0 400px;
+  max-width: 400px;
+  overflow-y: auto;
+  overflow-x: hidden !important; /* ГЛАВНОЕ: скрываем горизонтальный скролл */
+  background: #fafafa;
+  border-left: 1px solid #e8e8e8;
+  box-sizing: border-box;
 }
 
 /* Контент панели свойств */
@@ -111,6 +97,7 @@
   width: 100% !important;
   max-width: 100% !important;
   overflow-x: hidden !important;
+  box-sizing: border-box;
 }
 
 /* Адаптивность - критичный момент */

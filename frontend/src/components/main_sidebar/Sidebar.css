@@ -63,9 +63,11 @@
 
 /* Футер */
 .sidebar-footer {
+  margin-top: auto; /* Это автоматически прижмет блок к низу */
   padding: 16px;
   border-top: 1px solid #333;
   background: #000c17;
+  flex-shrink: 0; /* Не сжимать при нехватке места */
 }
 
 .user-info {
