@@ -95,6 +95,20 @@
   max-height: 100vh; /* Не выходит за границы экрана */
 }
 
+/* Настройки для отобрадения статусов ядер в сетке по 4 столбца  */
+.cores-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr); /* 2 равные колонки */
+  gap: 8px; /* отступ между тегами */
+  margin-top: 12px;
+}
+
+.core-tag {
+  margin: 0 !important; /* убираем стандартные отступы AntD */
+  text-align: center;
+  width: 100% !important; /* растягиваем на ширину ячейки */
+}
+
 /* Контент панели свойств */
 .properties-content-fix {
   padding: 24px !important;

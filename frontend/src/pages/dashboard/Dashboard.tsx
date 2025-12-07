@@ -310,15 +310,23 @@ const Dashboard: React.FC = () => {
                       </Tag>
                     </Descriptions.Item>
                     <Descriptions.Item label="Available Cores">
-                      {selectedDeviceInfo.diagnostics.cores?.length || 0}
+                      <Tag color="blue">
+                        {selectedDeviceInfo.diagnostics.cores?.length || 0}
+                      </Tag>
                     </Descriptions.Item>
-                    <Descriptions.Item label="Memristors available / total">
-                      {selectedDeviceInfo.diagnostics.memristors?.available || 0} /
-                       {selectedDeviceInfo.diagnostics.memristors?.total || 0}
+                    <Descriptions.Item label="Memristors total">
+                      <Tag color="purple">
+                        {selectedDeviceInfo.diagnostics.memristors?.total || 0}
+                      </Tag>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Memristors available">
+                      <Tag color="green">
+                        {selectedDeviceInfo.diagnostics.memristors?.available || 0}
+                      </Tag>
                     </Descriptions.Item>
                   </Descriptions>
 
-                  {selectedDeviceInfo.diagnostics.cores && (
+                  {selectedDeviceInfo.diagnostics?.cores && (
                     <div className="cores-list">
                       <h4>Cores Status</h4>
                       <div className="cores-grid">
