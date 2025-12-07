@@ -18,9 +18,13 @@ async def run_diagnostics_task(device_id: str, db: Session):
     await asyncio.sleep(3)  # Имитация работы
     device = db.query(Device).filter(Device.id == device_id).first()
     if device:
+        # Используем реальные данные устройства для диагностики
+        cores_count = len(device.cores) if device.cores else 4
+        memristors_count = len(device.memristors) if device.memristors else 16
+
         device.diagnostics = {
-            "cores": [{"id": i, "status": "healthy"} for i in range(4)],
-            "memristors": {"available": 16, "total": 16},
+            "cores": [{"id": i, "status": "healthy"} for i in range(cores_count)],
+            "memristors": {"available": memristors_count, "total": memristors_count},
             "overall_status": "passed"
         }
         workflow = db.query(DeviceWorkflowStatus).filter(DeviceWorkflowStatus.device_id == device_id).first()

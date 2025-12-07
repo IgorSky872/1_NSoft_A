@@ -65,9 +65,15 @@ const Dashboard: React.FC = () => {
     });
   };
 
-  const showDeviceProperties = (device: Device) => {
-    setSelectedDeviceInfo(device);
-    setShowPropertiesPanel(true);
+  const showDeviceProperties = async (device: Device) => {
+    try {
+      // Загружаем полные детали устройства
+      const response = await api.get<Device>(`/devices/${device.id}/details`);
+      setSelectedDeviceInfo(response.data);
+      setShowPropertiesPanel(true);
+    } catch (error) {
+      message.error('Failed to load device details');
+    }
   };
 
   const closePropertiesPanel = () => {
@@ -306,9 +312,9 @@ const Dashboard: React.FC = () => {
                     <Descriptions.Item label="Available Cores">
                       {selectedDeviceInfo.diagnostics.cores?.length || 0}
                     </Descriptions.Item>
-                    <Descriptions.Item label="Memristors">
+                    <Descriptions.Item label="Memristors available / total">
                       {selectedDeviceInfo.diagnostics.memristors?.available || 0} /
-                      {selectedDeviceInfo.diagnostics.memristors?.total || 0}
+                       {selectedDeviceInfo.diagnostics.memristors?.total || 0}
                     </Descriptions.Item>
                   </Descriptions>
 
@@ -327,25 +333,7 @@ const Dashboard: React.FC = () => {
                 </Card>
               )}
 
-              {selectedDeviceInfo.memristors && (
-                <Card title="Memristor Details" className="property-card">
-                  <List
-                    size="small"
-                    dataSource={selectedDeviceInfo.memristors}
-                    renderItem={(mem: any) => (
-                      <List.Item>
-                        <div className="memristor-item">
-                          <span>Memristor {mem.id}</span>
-                          <Tag color={mem.status === 'active' ? 'success' : 'error'}>
-                            {mem.status}
-                          </Tag>
-                        </div>
-                      </List.Item>
-                    )}
-                    className="memristors-list"
-                  />
-                </Card>
-              )}
+              {/* Memristor Details убран - будет добавлен позже */}
 
               <div className="panel-actions">
                 <Button

@@ -5,6 +5,8 @@
   display: flex;
   min-height: 0;
   width: 100%;
+  height: 100%; /* Важно: ограничиваем высоту */
+  overflow: hidden; /* Скрываем общую прокрутку */
 }
 
 /* Основная область устройств */
@@ -89,6 +91,8 @@
   background: #fafafa;
   border-left: 1px solid #e8e8e8;
   box-sizing: border-box;
+  height: 100%; /* Занимает всю высоту родителя */
+  max-height: 100vh; /* Не выходит за границы экрана */
 }
 
 /* Контент панели свойств */
